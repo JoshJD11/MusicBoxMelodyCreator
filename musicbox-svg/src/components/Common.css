@@ -1,0 +1,16 @@
+.mb-settingLayout {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+}
+
+@media screen and (max-width: 840px) {
+    .mb-settingLayout {
+        flex-direction: column;
+    }
+}
+
+.mb-settingGroup {
+    min-width: 240px;
+    margin-top: 8px;
+}

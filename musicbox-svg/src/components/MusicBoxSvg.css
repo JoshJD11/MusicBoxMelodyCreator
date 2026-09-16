@@ -1,0 +1,7 @@
+.mb-musicBoxSvgWrapper {
+    padding: 16px;
+    overflow: scroll;
+    max-width: inherit;
+    box-sizing: border-box;
+    max-width: 100%;
+}

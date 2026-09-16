@@ -1,0 +1,62 @@
+@import "~normalize.css";
+@import "~@blueprintjs/core/lib/css/blueprint.css";
+@import "~@blueprintjs/icons/lib/css/blueprint-icons.css";
+
+.mb-appRoot {
+  max-width: 1200px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  margin: auto;
+}
+
+.mb-settingsArea {
+  display: flex;
+  max-width: 800px;
+}
+
+@media screen and (max-width: 1200px) {
+  .mb-settingsArea {
+      flex-direction: column;
+  }
+}
+
+.mb-settingsTab-container {
+  width: 600px;
+  padding: 8px;
+  flex: 1;
+}
+
+.mb-musicBox-preview {
+  padding: 16px;
+  margin: 8px;
+  display: flex;
+  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  max-width: 100%;
+  box-sizing: content-box;
+}
+
+.mb-previewActions {
+  width: 100%;
+  margin-bottom: 16px;
+  display: flex;
+  justify-content: center;
+  overflow-x: auto;
+}
+
+.mb-svg-downloadButton {
+  margin: 8px;
+}
+
+.mb-debugMessage-Container {
+  padding: 8px;
+}
+
+.mb-debugMessage {
+  white-space: pre;
+  max-height: 320px;
+  overflow-y: auto;
+}
