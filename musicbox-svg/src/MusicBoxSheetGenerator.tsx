@@ -266,13 +266,17 @@ export default class MusicBoxSheetGenerator extends React.Component<
           const downloadLink = document.createElement("a");
           downloadLink.href = svgUrl;
 
-          const midiFileName = this.state.fileName ?? "musicBox";
+          const sourceFileName = this.state.fileName || "musicBox";
+          const baseFileName = sourceFileName
+            .replace(/\.(midi|mid)$/i, "")
+            .replace(/[<>:"/\\|?*]/g, "_");
 
-          downloadLink.download = `${midiFileName}_page_${i}.svg`;
+          downloadLink.download = `${baseFileName}_page_${i + 1}.svg`;
 
           document.body.appendChild(downloadLink);
           downloadLink.click();
           document.body.removeChild(downloadLink);
+          URL.revokeObjectURL(svgUrl);
         }
       }
     }
