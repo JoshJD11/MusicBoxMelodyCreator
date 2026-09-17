@@ -181,9 +181,9 @@ export default class MusicBoxSheetGenerator extends React.Component<
               <ButtonGroup style={{ minWidth: 200 }}>
                 <Button
                   icon={"download"}
-                  text={"Download SVG(s)"}
+                  text={"Download DXF(s)"}
                   onClick={() => {
-                    this.downloadSvgs();
+                    this.downloadDxfs();
                   }}
                 />
                 <Button
@@ -252,31 +252,41 @@ export default class MusicBoxSheetGenerator extends React.Component<
     });
   }
 
-  private downloadSvgs() {
+  private downloadDxfs() {
     if (this.musicBoxSvgRef) {
       const numPages = this.musicBoxSvgRef.getNumPages();
 
       for (let i = 0; i < numPages; i++) {
         const svgData = this.musicBoxSvgRef.getSvg(i);
         if (svgData) {
-          const svgBlob = new Blob([svgData], {
-            type: "image/svg+xml;charset=utf-8",
+          const svgDocument = new DOMParser().parseFromString(
+            svgData,
+            "image/svg+xml"
+          );
+          const svgElement = svgDocument.documentElement;
+          const widthMm = parseFloat(svgElement.getAttribute("width") || "0");
+          const heightMm = parseFloat(
+            svgElement.getAttribute("height") || "0"
+          );
+          const dxfData = createDxfFromSvg(svgElement, widthMm, heightMm);
+          const dxfBlob = new Blob([dxfData], {
+            type: "application/dxf",
           });
-          const svgUrl = URL.createObjectURL(svgBlob);
+          const dxfUrl = URL.createObjectURL(dxfBlob);
           const downloadLink = document.createElement("a");
-          downloadLink.href = svgUrl;
+          downloadLink.href = dxfUrl;
 
           const sourceFileName = this.state.fileName || "musicBox";
           const baseFileName = sourceFileName
             .replace(/\.(midi|mid)$/i, "")
             .replace(/[<>:"/\\|?*]/g, "_");
 
-          downloadLink.download = `${baseFileName}_page_${i + 1}.svg`;
+          downloadLink.download = `${baseFileName}_page_${i + 1}.dxf`;
 
           document.body.appendChild(downloadLink);
           downloadLink.click();
           document.body.removeChild(downloadLink);
-          URL.revokeObjectURL(svgUrl);
+          URL.revokeObjectURL(dxfUrl);
         }
       }
     }
@@ -435,6 +445,230 @@ export default class MusicBoxSheetGenerator extends React.Component<
   private toggleDebugMessage(): void {
     this.setState({ ...this.state, showMidiJson: !this.state.showMidiJson });
   }
+}
+
+interface IDxfTransform {
+  a: number;
+  b: number;
+  c: number;
+  d: number;
+  e: number;
+  f: number;
+}
+
+const IDENTITY_DXF_TRANSFORM: IDxfTransform = {
+  a: 1,
+  b: 0,
+  c: 0,
+  d: 1,
+  e: 0,
+  f: 0,
+};
+
+function createDxfFromSvg(
+  svgElement: Element,
+  widthMm: number,
+  heightMm: number
+): string {
+  const entities: string[] = [];
+
+  appendDxfEntities(
+    svgElement,
+    IDENTITY_DXF_TRANSFORM,
+    heightMm,
+    entities
+  );
+
+  const dxf = [
+    "0",
+    "SECTION",
+    "2",
+    "HEADER",
+    "9",
+    "$ACADVER",
+    "1",
+    "AC1009",
+    "9",
+    "$INSUNITS",
+    "70",
+    "4",
+    "9",
+    "$EXTMIN",
+    "10",
+    "0",
+    "20",
+    "0",
+    "9",
+    "$EXTMAX",
+    "10",
+    formatDxfNumber(widthMm),
+    "20",
+    formatDxfNumber(heightMm),
+    "0",
+    "ENDSEC",
+    "0",
+    "SECTION",
+    "2",
+    "ENTITIES",
+    ...entities,
+    "0",
+    "ENDSEC",
+    "0",
+    "EOF",
+  ];
+
+  return dxf.join("\r\n") + "\r\n";
+}
+
+function appendDxfEntities(
+  element: Element,
+  parentTransform: IDxfTransform,
+  heightMm: number,
+  entities: string[]
+) {
+  const transform = multiplyDxfTransforms(
+    parentTransform,
+    parseDxfTransform(element.getAttribute("transform"))
+  );
+  const tagName = element.tagName.toLowerCase();
+
+  if (tagName === "line") {
+    const start = transformDxfPoint(
+      transform,
+      parseFloat(element.getAttribute("x1") || "0"),
+      parseFloat(element.getAttribute("y1") || "0")
+    );
+    const end = transformDxfPoint(
+      transform,
+      parseFloat(element.getAttribute("x2") || "0"),
+      parseFloat(element.getAttribute("y2") || "0")
+    );
+    appendDxfLine(entities, start, end, heightMm);
+  } else if (tagName === "circle") {
+    const center = transformDxfPoint(
+      transform,
+      parseFloat(element.getAttribute("cx") || "0"),
+      parseFloat(element.getAttribute("cy") || "0")
+    );
+    const radius =
+      parseFloat(element.getAttribute("r") || "0") *
+      Math.sqrt(transform.a * transform.a + transform.b * transform.b);
+    appendDxfCircle(entities, center, radius, heightMm);
+  }
+
+  for (let i = 0; i < element.children.length; i++) {
+    appendDxfEntities(element.children[i], transform, heightMm, entities);
+  }
+}
+
+function appendDxfLine(
+  entities: string[],
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+  heightMm: number
+) {
+  entities.push(
+    "0",
+    "LINE",
+    "8",
+    "CUT",
+    "10",
+    formatDxfNumber(start.x),
+    "20",
+    formatDxfNumber(heightMm - start.y),
+    "30",
+    "0",
+    "11",
+    formatDxfNumber(end.x),
+    "21",
+    formatDxfNumber(heightMm - end.y),
+    "31",
+    "0"
+  );
+}
+
+function appendDxfCircle(
+  entities: string[],
+  center: { x: number; y: number },
+  radius: number,
+  heightMm: number
+) {
+  entities.push(
+    "0",
+    "CIRCLE",
+    "8",
+    "HOLES",
+    "10",
+    formatDxfNumber(center.x),
+    "20",
+    formatDxfNumber(heightMm - center.y),
+    "30",
+    "0",
+    "40",
+    formatDxfNumber(radius)
+  );
+}
+
+function transformDxfPoint(
+  transform: IDxfTransform,
+  x: number,
+  y: number
+): { x: number; y: number } {
+  return {
+    x: transform.a * x + transform.c * y + transform.e,
+    y: transform.b * x + transform.d * y + transform.f,
+  };
+}
+
+function parseDxfTransform(value: string | null): IDxfTransform {
+  if (!value) {
+    return IDENTITY_DXF_TRANSFORM;
+  }
+
+  let transform = IDENTITY_DXF_TRANSFORM;
+  const transformPattern = /(matrix|translate)\s*\(([^)]+)\)/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = transformPattern.exec(value)) !== null) {
+    const values = match[2].split(/[ ,]+/).map(Number);
+    const localTransform: IDxfTransform =
+      match[1] === "matrix"
+        ? {
+            a: values[0],
+            b: values[1],
+            c: values[2],
+            d: values[3],
+            e: values[4],
+            f: values[5],
+          }
+        : {
+            ...IDENTITY_DXF_TRANSFORM,
+            e: values[0],
+            f: values[1] || 0,
+          };
+    transform = multiplyDxfTransforms(transform, localTransform);
+  }
+
+  return transform;
+}
+
+function multiplyDxfTransforms(
+  left: IDxfTransform,
+  right: IDxfTransform
+): IDxfTransform {
+  return {
+    a: left.a * right.a + left.c * right.b,
+    b: left.b * right.a + left.d * right.b,
+    c: left.a * right.c + left.c * right.d,
+    d: left.b * right.c + left.d * right.d,
+    e: left.a * right.e + left.c * right.f + left.e,
+    f: left.b * right.e + left.d * right.f + left.f,
+  };
+}
+
+function formatDxfNumber(value: number): string {
+  const rounded = Math.abs(value) < 0.000001 ? 0 : value;
+  return rounded.toFixed(6).replace(/\.?(0+)$/, "");
 }
 
 function midiToFrequency(midiNumber: number): number {
