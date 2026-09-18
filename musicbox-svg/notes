@@ -1,7 +1,9 @@
-usar width = 190 y height = 277 y aumentar el size de los agujeros en 0.2mm
+usar width = 190 y height = 277 (Dos tiras por hoja) y aumentar el size de los agujeros en 0.2mm
 Para usar en la version gratuita, necesito transformarlo en DXF
 COMO CORTAR UNA PARTITURA PARA CAJA MUSICAL CON MECANISMO DE PAPEL EN CAMEO 5 
 presion 35
 profundidad 5
 velocidad 3
 hoja usada opalina 225g, opcion correcta pero podria ser mas duro
+
+Para una sola tira, usar width = 85 y height 3000.
