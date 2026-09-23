@@ -7,7 +7,10 @@ import MusicBoxSvg from "./components/MusicBoxSvg";
 import { IMusicBoxSvgFormatOptions } from "./model/IMusicBoxSvgFormatOptions";
 import { BuiltInProfiles, IMusicBoxProfile } from "./model/IMusicBoxProfile";
 import { MusicBoxProfileEditor } from "./components/MusicBoxProfileEditor";
-import { buildGeneratedMusicBoxSequence } from "./utilities/MusicBoxMidi";
+import {
+  buildGeneratedMusicBoxSequence,
+  IGeneratedMusicBoxEvent,
+} from "./utilities/MusicBoxMidi";
 
 import {
   Card,
@@ -29,6 +32,9 @@ const CREDITS = [
   },
 ];
 
+const PLAYBACK_LOOKAHEAD_SECONDS = 0.5;
+const PLAYBACK_SCHEDULE_INTERVAL_MS = 100;
+
 interface IAppState {
   midiJson: string;
   fileName?: string;
@@ -46,8 +52,14 @@ export default class MusicBoxSheetGenerator extends React.Component<
 > {
   private musicBoxSvgRef: MusicBoxSvg | null;
   private audioContext: AudioContext | null;
-  private playbackSources: OscillatorNode[];
+  private playbackSources: AudioScheduledSourceNode[];
   private playbackTimer: number | null;
+  private playbackScheduleTimer: number | null;
+  private pendingPlaybackEvents: IGeneratedMusicBoxEvent[];
+  private pendingPlaybackIndex: number;
+  private playbackStartTime: number;
+  private playbackMasterGain: GainNode | null;
+  private playbackNoiseBuffer: AudioBuffer | null;
   private playbackEndTime: number;
 
   constructor(props: {}) {
@@ -75,6 +87,12 @@ export default class MusicBoxSheetGenerator extends React.Component<
     this.audioContext = null;
     this.playbackSources = [];
     this.playbackTimer = null;
+    this.playbackScheduleTimer = null;
+    this.pendingPlaybackEvents = [];
+    this.pendingPlaybackIndex = 0;
+    this.playbackStartTime = 0;
+    this.playbackMasterGain = null;
+    this.playbackNoiseBuffer = null;
     this.playbackEndTime = 0;
   }
 
@@ -305,6 +323,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
     if (this.state.playbackState === "paused") {
       if (this.audioContext) {
         await this.audioContext.resume();
+        this.schedulePendingPlaybackEvents();
         this.setState({ ...this.state, playbackState: "playing" });
         this.schedulePlaybackCompletion(
           this.playbackEndTime - this.audioContext.currentTime
@@ -349,52 +368,83 @@ export default class MusicBoxSheetGenerator extends React.Component<
     }
 
     const masterGain = context.createGain();
-    masterGain.gain.value = 0.25;
+    masterGain.gain.value = 0.3;
     masterGain.connect(context.destination);
 
     const now = context.currentTime;
-    let playbackDuration = 0;
-    for (const event of sequence) {
-      const start = now + event.startTimeSeconds;
-      const duration = Math.max(0.12, event.durationSeconds);
-      playbackDuration = Math.max(
-        playbackDuration,
-        event.startTimeSeconds + duration + 0.05
-      );
-      const frequency = midiToFrequency(event.note);
-
-      const oscillator = context.createOscillator();
-      const gain = context.createGain();
-      const filter = context.createBiquadFilter();
-
-      oscillator.type = "triangle";
-      oscillator.frequency.setValueAtTime(frequency, start);
-
-      filter.type = "lowpass";
-      filter.frequency.setValueAtTime(4500, start);
-      filter.Q.value = 0.5;
-
-      gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.exponentialRampToValueAtTime(0.18 * (event.velocity / 127), start + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
-
-      oscillator.connect(filter);
-      filter.connect(gain);
-      gain.connect(masterGain);
-
-      oscillator.start(start);
-      oscillator.stop(start + duration + 0.05);
-      this.playbackSources.push(oscillator);
-    }
+    const playbackDuration = sequence.reduce(
+      (duration, event) =>
+        Math.max(
+          duration,
+          event.startTimeSeconds + getPianoReleaseSeconds(event.note) + 0.05
+        ),
+      0
+    );
+    this.pendingPlaybackEvents = sequence;
+    this.pendingPlaybackIndex = 0;
+    this.playbackStartTime = now + PLAYBACK_LOOKAHEAD_SECONDS;
+    this.playbackMasterGain = masterGain;
+    this.playbackNoiseBuffer = createPianoNoiseBuffer(context);
+    this.schedulePendingPlaybackEvents();
 
     this.setState({ ...this.state, playbackState: "playing" });
-    this.playbackEndTime = now + playbackDuration;
-    this.schedulePlaybackCompletion(playbackDuration);
+    this.playbackEndTime = this.playbackStartTime + playbackDuration;
+    this.schedulePlaybackCompletion(
+      this.playbackEndTime - context.currentTime
+    );
+  }
+
+  private schedulePendingPlaybackEvents(): void {
+    if (
+      !this.audioContext ||
+      !this.playbackMasterGain ||
+      !this.playbackNoiseBuffer
+    ) {
+      return;
+    }
+
+    const scheduleUntil =
+      this.audioContext.currentTime -
+      this.playbackStartTime +
+      PLAYBACK_LOOKAHEAD_SECONDS;
+
+    while (
+      this.pendingPlaybackIndex < this.pendingPlaybackEvents.length &&
+      this.pendingPlaybackEvents[this.pendingPlaybackIndex].startTimeSeconds <=
+        scheduleUntil
+    ) {
+      const event = this.pendingPlaybackEvents[this.pendingPlaybackIndex];
+      const { sources } = createPianoNote(
+        this.audioContext,
+        this.playbackMasterGain,
+        event.note,
+        this.playbackStartTime + event.startTimeSeconds,
+        event.velocity,
+        this.playbackNoiseBuffer
+      );
+      this.playbackSources.push(...sources);
+      this.pendingPlaybackIndex++;
+    }
+
+    if (this.pendingPlaybackIndex < this.pendingPlaybackEvents.length) {
+      this.playbackScheduleTimer = window.setTimeout(
+        () => this.schedulePendingPlaybackEvents(),
+        PLAYBACK_SCHEDULE_INTERVAL_MS
+      );
+    } else {
+      this.playbackScheduleTimer = null;
+    }
   }
 
   private schedulePlaybackCompletion(delaySeconds: number): void {
     this.playbackTimer = window.setTimeout(() => {
+      if (this.playbackScheduleTimer !== null) {
+        window.clearTimeout(this.playbackScheduleTimer);
+        this.playbackScheduleTimer = null;
+      }
       this.playbackSources = [];
+      this.pendingPlaybackEvents = [];
+      this.pendingPlaybackIndex = 0;
       this.playbackTimer = null;
       this.setState({ ...this.state, playbackState: "stopped" });
     }, Math.max(0, delaySeconds * 1000));
@@ -409,6 +459,10 @@ export default class MusicBoxSheetGenerator extends React.Component<
       if (this.playbackTimer !== null) {
         window.clearTimeout(this.playbackTimer);
         this.playbackTimer = null;
+      }
+      if (this.playbackScheduleTimer !== null) {
+        window.clearTimeout(this.playbackScheduleTimer);
+        this.playbackScheduleTimer = null;
       }
       this.playbackEndTime = this.audioContext.currentTime + remainingSeconds;
       await this.audioContext.suspend();
@@ -430,16 +484,24 @@ export default class MusicBoxSheetGenerator extends React.Component<
       window.clearTimeout(this.playbackTimer);
       this.playbackTimer = null;
     }
+    if (this.playbackScheduleTimer !== null) {
+      window.clearTimeout(this.playbackScheduleTimer);
+      this.playbackScheduleTimer = null;
+    }
 
     this.playbackSources.forEach((source) => {
       try {
         source.stop();
       } catch {
-        // An oscillator may already have finished naturally.
+        // A source may already have finished naturally.
       }
       source.disconnect();
     });
     this.playbackSources = [];
+    this.pendingPlaybackEvents = [];
+    this.pendingPlaybackIndex = 0;
+    this.playbackMasterGain = null;
+    this.playbackNoiseBuffer = null;
   }
 
   private toggleDebugMessage(): void {
@@ -673,4 +735,118 @@ function formatDxfNumber(value: number): string {
 
 function midiToFrequency(midiNumber: number): number {
   return 440 * Math.pow(2, (midiNumber - 69) / 12);
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+interface IPianoNoteResult {
+  sources: AudioScheduledSourceNode[];
+  releaseSeconds: number;
+}
+
+function getPianoReleaseSeconds(midiNote: number): number {
+  const baseDecay = clamp(2.6 - (midiNote - 60) * 0.032, 0.5, 4.5);
+  return Math.max(0.18, baseDecay) + 0.006;
+}
+
+function createPianoNote(
+  context: AudioContext,
+  destination: AudioNode,
+  midiNote: number,
+  startTime: number,
+  velocity: number,
+  noiseBuffer: AudioBuffer
+): IPianoNoteResult {
+  const fundamental = midiToFrequency(midiNote);
+  const velocityGain = 0.18 + 0.6 * (velocity / 127);
+
+  const baseDecay = clamp(2.6 - (midiNote - 60) * 0.032, 0.5, 4.5);
+
+  const partials: Array<{ mult: number; amp: number; decayScale: number }> = [
+    { mult: 1, amp: 1.0, decayScale: 1.0 },
+    { mult: 2, amp: 0.5, decayScale: 0.72 },
+    { mult: 3, amp: 0.26, decayScale: 0.52 },
+    { mult: 4.01, amp: 0.16, decayScale: 0.38 },
+  ];
+
+  const noteGain = context.createGain();
+  noteGain.gain.value = 1;
+  noteGain.connect(destination);
+
+  const sources: AudioScheduledSourceNode[] = [];
+  let maxRelease = 0;
+
+  partials.forEach((partial) => {
+    const osc = context.createOscillator();
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(fundamental * partial.mult, startTime);
+
+    const partialGain = context.createGain();
+    const attack = partial.mult === 1 ? 0.006 : 0.003;
+    const decay = Math.max(0.18, baseDecay * partial.decayScale);
+    const peak = velocityGain * partial.amp * 0.45;
+
+    partialGain.gain.setValueAtTime(0.0001, startTime);
+    partialGain.gain.exponentialRampToValueAtTime(peak, startTime + attack);
+    partialGain.gain.exponentialRampToValueAtTime(
+      0.0001,
+      startTime + attack + decay
+    );
+
+    osc.connect(partialGain);
+    partialGain.connect(noteGain);
+
+    osc.start(startTime);
+    osc.stop(startTime + attack + decay + 0.05);
+    sources.push(osc);
+
+    maxRelease = Math.max(maxRelease, attack + decay);
+  });
+
+  // Short bandpass-filtered noise burst approximating the hammer strike.
+  const noiseDuration = 0.018;
+  const noiseSource = context.createBufferSource();
+  noiseSource.buffer = noiseBuffer;
+
+  const noiseFilter = context.createBiquadFilter();
+  noiseFilter.type = "bandpass";
+  noiseFilter.frequency.setValueAtTime(
+    clamp(fundamental * 2.5, 400, 8000),
+    startTime
+  );
+  noiseFilter.Q.value = 0.6;
+
+  const noiseGain = context.createGain();
+  noiseGain.gain.setValueAtTime(velocityGain * 0.1, startTime);
+  noiseGain.gain.exponentialRampToValueAtTime(
+    0.0001,
+    startTime + noiseDuration
+  );
+
+  noiseSource.connect(noiseFilter);
+  noiseFilter.connect(noiseGain);
+  noiseGain.connect(noteGain);
+  noiseSource.start(startTime);
+  noiseSource.stop(startTime + noiseDuration + 0.01);
+  sources.push(noiseSource);
+
+  return { sources, releaseSeconds: Math.max(maxRelease, noiseDuration) };
+}
+
+function createPianoNoiseBuffer(context: AudioContext): AudioBuffer {
+  const noiseDuration = 0.018;
+  const bufferSize = Math.max(
+    1,
+    Math.floor(context.sampleRate * noiseDuration)
+  );
+  const noiseBuffer = context.createBuffer(1, bufferSize, context.sampleRate);
+  const channelData = noiseBuffer.getChannelData(0);
+
+  for (let i = 0; i < bufferSize; i++) {
+    channelData[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+  }
+
+  return noiseBuffer;
 }

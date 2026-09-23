@@ -27,7 +27,7 @@ export function buildGeneratedMusicBoxSequence(
 
     const supportedNotes = musicBoxProfile.supportedNotes;
     const supportedSet = new Set<MidiNote>(supportedNotes);
-    const activeNotes = new Map<string, { note: MidiNote; startTimeSeconds: number; velocity: number; channel: number }>();
+    const activeNotes = new Map<string, Array<{ note: MidiNote; startTimeSeconds: number; velocity: number; channel: number }>>();
     const completedEvents: IGeneratedMusicBoxEvent[] = [];
 
     for (const event of musicTrack.events) {
@@ -38,12 +38,14 @@ export function buildGeneratedMusicBoxSequence(
         const key = `${event.channel}:${event.note}`;
 
         if (event.channelMessageType === ChannelMessageType.NoteOn && event.velocity > 0) {
-            activeNotes.set(key, {
+            const notes = activeNotes.get(key) || [];
+            notes.push({
                 note: event.note,
                 startTimeSeconds: event.absTimeSeconds,
                 velocity: event.velocity,
                 channel: event.channel,
             });
+            activeNotes.set(key, notes);
             continue;
         }
 
@@ -51,7 +53,8 @@ export function buildGeneratedMusicBoxSequence(
             event.channelMessageType === ChannelMessageType.NoteOff ||
             (event.channelMessageType === ChannelMessageType.NoteOn && event.velocity === 0)
         ) {
-            const activeNote = activeNotes.get(key);
+            const notes = activeNotes.get(key);
+            const activeNote = notes && notes.shift();
             if (activeNote) {
                 const resolvedNote = resolveSupportedNote(activeNote.note, supportedSet, transposeOutOfRangeNotes, supportedNotes);
                 if (resolvedNote !== null) {
@@ -62,20 +65,26 @@ export function buildGeneratedMusicBoxSequence(
                         velocity: activeNote.velocity,
                     });
                 }
-                activeNotes.delete(key);
+                if (notes && notes.length > 0) {
+                    activeNotes.set(key, notes);
+                } else {
+                    activeNotes.delete(key);
+                }
             }
         }
     }
 
-    for (const activeNote of Array.from(activeNotes.values())) {
-        const resolvedNote = resolveSupportedNote(activeNote.note, supportedSet, transposeOutOfRangeNotes, supportedNotes);
-        if (resolvedNote !== null) {
-            completedEvents.push({
-                note: resolvedNote,
-                startTimeSeconds: activeNote.startTimeSeconds,
-                durationSeconds: 0.35,
-                velocity: activeNote.velocity,
-            });
+    for (const notes of Array.from(activeNotes.values())) {
+        for (const activeNote of notes) {
+            const resolvedNote = resolveSupportedNote(activeNote.note, supportedSet, transposeOutOfRangeNotes, supportedNotes);
+            if (resolvedNote !== null) {
+                completedEvents.push({
+                    note: resolvedNote,
+                    startTimeSeconds: activeNote.startTimeSeconds,
+                    durationSeconds: 0.35,
+                    velocity: activeNote.velocity,
+                });
+            }
         }
     }
 

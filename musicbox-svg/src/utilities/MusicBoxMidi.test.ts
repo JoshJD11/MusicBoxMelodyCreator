@@ -6,7 +6,7 @@ import { buildGeneratedMusicBoxSequence, exportGeneratedMusicBoxMidi } from './M
 
 describe('music box MIDI generation', () => {
     it('builds a piano-friendly sequence for the selected profile and exports MIDI data', async () => {
-        const buffer = fs.readFileSync(path.resolve(__dirname, '../../samples/c4-octave.mid'));
+        const buffer = fs.readFileSync(path.resolve(__dirname, '../../samples/You are my sunshine.mid'));
         const midiFile = new MidiFile();
         midiFile.loadFromBuffer(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
 
