@@ -1,7 +1,26 @@
 .mb-midiFilePicker {
-    height: 250px;
+    min-height: 250px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
 }
 
-#drop_zone {
-    border: 1px dotted gray;
+#drop_zone.mb-midiFilePicker {
+    border: 1px dashed #b9c2b6;
+    border-radius: 3px;
+    background: #fffdf7;
+    box-shadow: none;
+    transition: border-color 160ms ease, background-color 160ms ease;
+}
+
+#drop_zone.mb-midiFilePicker:hover {
+    border-color: #426b5a;
+    background: #fbfcf7;
+}
+
+.mb-midiFilePicker > svg {
+    display: block;
+    width: 100%;
+    max-width: 320px;
+    height: auto;
 }

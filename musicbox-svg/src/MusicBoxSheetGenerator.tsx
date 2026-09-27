@@ -17,7 +17,6 @@ import {
   Collapse,
   Pre,
   Button,
-  Divider,
   NonIdealState,
   ButtonGroup,
 } from "@blueprintjs/core";
@@ -141,9 +140,9 @@ export default class MusicBoxSheetGenerator extends React.Component<
     );
 
     let fischerPriceSettings: JSX.Element;
-    if (this.state.midiDataAvailable && this.state.midiFile) {
+    if (!this.state.midiDataAvailable || !this.state.midiFile) {
       fischerPriceSettings = (
-        <div className="mb-settingsTab-container">
+        <div className="mb-settingsTab-container mb-settingsArea">
           <Card>
             <NonIdealState
               icon={"error"}
@@ -165,98 +164,121 @@ export default class MusicBoxSheetGenerator extends React.Component<
 
     return (
       <div className="mb-appRoot">
-        <div className="mb-settingsArea">
-          <Tabs
-            animate={true}
-            id="settings-tabs"
-            key={"settings-tabs"}
-            renderActiveTabPanelOnly={true}
-            vertical={true}
-          >
-            <Tab id="file-picker-tab" title="MIDI File" panel={filePicker} />
-            <Tab
-              id="paper-settings-tab"
-              title="Paper/Music Box Settings"
-              panel={paperSettings}
-            />
-            <Tab
-              id="format-settings-tab"
-              title="Layout/Pagination"
-              panel={formatSettings}
-            />
-            <Tab
-              id="3d-printing-tab"
-              title="3D Printable Fischer Price"
-              panel={fischerPriceSettings}
-            />
-            <Tabs.Expander />
-          </Tabs>
-        </div>
-        <Divider />
-        {this.state.midiDataAvailable && this.state.midiFile && (
-          <div className="mb-musicBox-preview">
-            <div className="mb-previewActions">
-              <ButtonGroup style={{ minWidth: 200 }}>
-                <Button
-                  icon={"download"}
-                  text={"Download DXF(s)"}
-                  onClick={() => {
-                    this.downloadDxfs();
-                  }}
-                />
-                <Button
-                  icon={
-                    this.state.playbackState === "playing" ? "pause" : "play"
-                  }
-                  text={
-                    this.state.playbackState === "playing"
-                      ? "Pause piano"
-                      : "Play generated piano"
-                  }
-                  onClick={() => {
-                    this.toggleGeneratedPiano();
-                  }}
-                />
-                <Button
-                  icon={"refresh"}
-                  text={"Restart piano"}
-                  onClick={() => {
-                    this.restartGeneratedPiano();
-                  }}
-                />
-                <Button onClick={() => this.toggleDebugMessage()}>
-                  {this.state.showMidiJson ? "Hide" : "Show"} MIDI JSON
-                </Button>
-                <Button icon={"export"} onClick={() => this.copyMidiJson()}>
-                  Copy MIDI Json
-                </Button>
-              </ButtonGroup>
-              <Collapse isOpen={this.state.showMidiJson}>
-                <Pre className="mb-debugMessage">{this.state.midiJson}</Pre>
-              </Collapse>
+        <header className="mb-header">
+          <div className="mb-brand">
+            <span className="mb-brandMark" aria-hidden="true">M</span>
+            <div>
+              <p className="mb-eyebrow">MUSICBOX / MELODY LAB</p>
+              <h1>Music box sheet studio</h1>
             </div>
-            <MusicBoxSvg
-              ref={(el) => {
-                this.musicBoxSvgRef = el;
-              }}
-              musicBoxProfile={this.state.musicBoxProfile}
-              formatting={this.state.musicBoxSvgFormatOptions}
-              midiFile={this.state.midiFile}
-              elementId={"mb-musicBoxSvg"}
-            />
           </div>
-        )}
-        <div className="mb-debugMessage-Container">
-          {this.state.midiDataAvailable && <Divider />}
-          <Card>
-            Code is available in{" "}
-            <a href="https://github.com/SabinT/musicbox-svg">github</a>
-            <br />
-            Credits
-            <br />
-            {credits}
-          </Card>
+          <div className="mb-status">
+            <span className={this.state.midiDataAvailable ? "mb-statusDot mb-statusDot-ready" : "mb-statusDot"} />
+            {this.state.midiDataAvailable ? "MIDI ready" : "No MIDI loaded"}
+          </div>
+        </header>
+        <div className="mb-workspace">
+          <aside className="mb-settingsArea">
+            <Tabs
+              animate={true}
+              id="settings-tabs"
+              key={"settings-tabs"}
+              renderActiveTabPanelOnly={true}
+              vertical={true}
+            >
+              <Tab id="file-picker-tab" title="MIDI File" panel={filePicker} />
+              <Tab
+                id="paper-settings-tab"
+                title="Paper/Music Box Settings"
+                panel={paperSettings}
+              />
+              <Tab
+                id="format-settings-tab"
+                title="Layout/Pagination"
+                panel={formatSettings}
+              />
+              <Tab
+                id="3d-printing-tab"
+                title="3D Printable Fischer Price"
+                panel={fischerPriceSettings}
+              />
+              <Tabs.Expander />
+            </Tabs>
+          </aside>
+          {this.state.midiDataAvailable && this.state.midiFile ? (
+            <main className="mb-mainPanel">
+              <div className="mb-panelHeading">
+                <div>
+                  <p className="mb-eyebrow">PAPER SCORE</p>
+                  <h2>{this.state.fileName}</h2>
+                </div>
+                <span className="mb-pageTag">SVG PREVIEW</span>
+              </div>
+              <div className="mb-musicBox-preview">
+                <div className="mb-previewActions">
+                  <ButtonGroup style={{ minWidth: 200 }}>
+                    <Button
+                      icon={"download"}
+                      text={"Download DXF(s)"}
+                      onClick={() => this.downloadDxfs()}
+                    />
+                    <Button
+                      icon={this.state.playbackState === "playing" ? "pause" : "play"}
+                      text={this.state.playbackState === "playing" ? "Pause piano" : "Play generated piano"}
+                      onClick={() => this.toggleGeneratedPiano()}
+                    />
+                    <Button
+                      icon={"refresh"}
+                      text={"Restart piano"}
+                      onClick={() => this.restartGeneratedPiano()}
+                    />
+                    <Button onClick={() => this.toggleDebugMessage()}>
+                      {this.state.showMidiJson ? "Hide" : "Show"} MIDI JSON
+                    </Button>
+                    <Button icon={"export"} onClick={() => this.copyMidiJson()}>
+                      Copy MIDI Json
+                    </Button>
+                  </ButtonGroup>
+                  <Collapse isOpen={this.state.showMidiJson}>
+                    <Pre className="mb-debugMessage">{this.state.midiJson}</Pre>
+                  </Collapse>
+                </div>
+                <MusicBoxSvg
+                  ref={(el) => {
+                    this.musicBoxSvgRef = el;
+                  }}
+                  musicBoxProfile={this.state.musicBoxProfile}
+                  formatting={this.state.musicBoxSvgFormatOptions}
+                  midiFile={this.state.midiFile}
+                  elementId={"mb-musicBoxSvg"}
+                />
+              </div>
+            </main>
+          ) : (
+            <main className="mb-mainPanel mb-emptyPanel">
+              <div className="mb-emptyContent">
+                <p className="mb-eyebrow">YOUR NEXT MELODY</p>
+                <h2>A little tune,<br />made tangible.</h2>
+                <p className="mb-emptyCopy">Load a MIDI file to turn its notes into a music box paper strip.</p>
+                <div className="mb-scoreRule" aria-hidden="true">
+                  <span className="mb-scoreNote mb-scoreNote-one" />
+                  <span className="mb-scoreNote mb-scoreNote-two" />
+                  <span className="mb-scoreNote mb-scoreNote-three" />
+                  <span className="mb-scoreNote mb-scoreNote-four" />
+                </div>
+                <span className="mb-emptyHint">MIDI files only <i /> Drag and drop is supported</span>
+              </div>
+              <div className="mb-emptyIndex">01 <span>/</span> CREATE</div>
+            </main>
+          )}
         </div>
+        <footer className="mb-footer">
+          <span>Made for melodies that deserve to be heard.</span>
+          <div>
+            Code: <a href="https://github.com/SabinT/musicbox-svg">GitHub</a>
+            <span className="mb-footerDivider">/</span>Credits: {credits}
+          </div>
+        </footer>
       </div>
     );
   }

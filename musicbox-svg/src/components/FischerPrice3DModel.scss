@@ -1,4 +1,9 @@
 .fischer-price-3d-view {
-    width: 400px;
-    height: 400px;
+    width: min(100%, 400px);
+}
+
+.fischer-price-3d-view canvas {
+    display: block;
+    width: 100%;
+    height: auto;
 }

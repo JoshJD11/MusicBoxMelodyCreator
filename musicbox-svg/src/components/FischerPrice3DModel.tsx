@@ -29,7 +29,7 @@ export default class FischerPrice3DModel extends React.Component<IFischerPrice3D
     var noteMaterial = new THREE.MeshToonMaterial({ color: 0x2dc4b8 });
 
     var renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(w, h);
+    renderer.setSize(w, h, false);
     renderer.setClearColor(0xffffff, 1);
 
     const axesHelper = new THREE.AxesHelper(5);
