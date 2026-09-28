@@ -73,6 +73,16 @@ export default class MusicBoxSvg extends React.Component<
     return svgRef ? svgRef.outerHTML : null;
   }
 
+  public componentDidUpdate(prevProps: IMusicBoxSvgProps) {
+    // Sheets rendered for a previously loaded file must never be reachable from
+    // the current one, so that every file generates its pages from scratch.
+    if (prevProps.midiFile !== this.props.midiFile) {
+      this.svgRefs = [];
+      this.numPages = 0;
+      this.errors = [];
+    }
+  }
+
   public render() {
     // TODO optimize this: recalc only needed on page settings changes
     try {
@@ -104,7 +114,7 @@ export default class MusicBoxSvg extends React.Component<
       return (
         <>
           <Callout intent={!this.errors ? "success" : "danger"}>
-            {this.errors && this.errors.map((e) => <p>{e}</p>)}
+            {this.errors.map((e, i) => <p key={i}>{e}</p>)}
             {
               <p>
                 Total paper length: {totalPaperLength.toFixed(2)} mm, width:{" "}
@@ -125,11 +135,20 @@ export default class MusicBoxSvg extends React.Component<
               </div>
             );
           })} */}
-          {this.generateSvgPages(pages, noteIndices, noteGap, noteOffsetY).map(
-            (item, index) => {
-              return <div className="mb-musicBoxSvgWrapper">{item}</div>;
-            }
-          )}
+          <div className="mb-musicBoxSvgPages">
+            {this.generateSvgPages(
+              pages,
+              noteIndices,
+              noteGap,
+              noteOffsetY
+            ).map((item, index) => {
+              return (
+                <div className="mb-musicBoxSvgWrapper" key={index}>
+                  {item}
+                </div>
+              );
+            })}
+          </div>
         </>
       );
     } catch (error) {
@@ -168,7 +187,7 @@ export default class MusicBoxSvg extends React.Component<
 
       const chunk = (
         <>
-          <g transform="matrix(0 1 1 0 0 0)">
+          <g>
             {formatOptions && formatOptions.renderBorder && (
               <>
                 {this.renderSvgLine(
@@ -194,7 +213,7 @@ export default class MusicBoxSvg extends React.Component<
               </>
             )}
           </g>
-          <g transform="matrix(0 1 1 0 0 0)">
+          <g>
             {page.midiEvents.map((noteOnEvent, i) =>
               createCircle(
                 /* key: */ `${page.pageNum}_${i}`,
@@ -213,48 +232,42 @@ export default class MusicBoxSvg extends React.Component<
       svgChunks.push(chunk);
     }
 
-    // A vertical strip uses the sheet height for its melody length and the
-    // sheet width for placing multiple strips side by side.
-    const chunkPaddingHorizontalMm = 10;
-    const chunkWidth =
-      this.props.musicBoxProfile.paperWidthMm + chunkPaddingHorizontalMm;
+    // A horizontal strip uses the sheet width for its melody length, and the
+    // paper tape's width for stacking multiple strips in rows.
+    const chunkPaddingVerticalMm = 10;
+    const chunkHeight =
+      this.props.musicBoxProfile.paperWidthMm + chunkPaddingVerticalMm;
     const sheetWidth = this.props.formatting.pageWidthMm;
-    const chunksPerSheet =
-      sheetWidth > 0
-        ? Math.floor(sheetWidth / chunkWidth)
+    const sheetHeight = this.props.formatting.pageHeightMm;
+    const stripsPerSheet =
+      sheetHeight > 0
+        ? Math.floor(sheetHeight / chunkHeight)
         : svgChunks.length;
 
-    if (chunksPerSheet < 1) {
+    if (stripsPerSheet < 1) {
       throw new Error(
-        `Sheet width must be at least ${chunkWidth.toFixed(2)} mm to fit one strip.`
+        `Sheet height must be at least ${chunkHeight.toFixed(2)} mm to fit one strip.`
       );
     }
 
-    const numPages = Math.ceil(svgChunks.length / chunksPerSheet);
+    const numPages = Math.ceil(svgChunks.length / stripsPerSheet);
 
     for (let i = 0; i < numPages; i++) {
-      let chunksCombined: JSX.Element[] = [];
-      for (let j = 0; j < chunksPerSheet; j++) {
-        const n = i * chunksPerSheet + j;
+      let stripsCombined: JSX.Element[] = [];
+      for (let j = 0; j < stripsPerSheet; j++) {
+        const n = i * stripsPerSheet + j;
         if (n < svgChunks.length) {
-          const translation = "translate(" + j * chunkWidth + " 0)";
-          chunksCombined.push(<g transform={translation}>{svgChunks[n]}</g>);
+          const translation = "translate(0 " + j * chunkHeight + ")";
+          stripsCombined.push(<g key={n} transform={translation}>{svgChunks[n]}</g>);
         }
       }
 
-      const w = sheetWidth > 0 ? sheetWidth : chunksPerSheet * chunkWidth;
-      const h =
-        this.props.formatting.pageHeightMm > 0
-          ? this.props.formatting.pageHeightMm
-          : Math.max(
-              ...pages
-                .slice(i * chunksPerSheet, (i + 1) * chunksPerSheet)
-                .map(
-                  (page) =>
-                    (page.endTimeInSeconds - page.startTimeInSeconds) *
-                    this.props.musicBoxProfile.millimetersPerSecond
-                )
-            );
+      const stripsOnPage = Math.min(
+        stripsPerSheet,
+        svgChunks.length - i * stripsPerSheet
+      );
+      const w = sheetWidth > 0 ? sheetWidth : stripsOnPage * chunkHeight;
+      const h = sheetHeight > 0 ? sheetHeight : stripsOnPage * chunkHeight;
 
       outPages.push(
         <svg
@@ -268,7 +281,7 @@ export default class MusicBoxSvg extends React.Component<
           // Namespace required to tell browsers to render downloaded files instead of displaying xml.
           xmlns={"http://www.w3.org/2000/svg"}
         >
-          {chunksCombined}
+          {stripsCombined}
         </svg>
       );
     }
@@ -483,9 +496,9 @@ export default class MusicBoxSvg extends React.Component<
     const musicBoxProfile = this.props.musicBoxProfile;
 
     let pageLengthInSeconds = Infinity;
-    if (formatOptions.pageHeightMm > 0) {
+    if (formatOptions.pageWidthMm > 0) {
       pageLengthInSeconds =
-        formatOptions.pageHeightMm /
+        formatOptions.pageWidthMm /
         this.props.musicBoxProfile.millimetersPerSecond;
     }
 
@@ -621,39 +634,46 @@ export default class MusicBoxSvg extends React.Component<
 
     let lastAbsoluteTime: number = 0;
     noteOnEvents.forEach((e) => {
+      // Generate into a copy: the parsed events belong to the loaded file and
+      // must stay untouched, so that every regeneration starts from the
+      // original notes instead of the notes transposed by a previous render.
+      const generatedEvent = e.copy();
+      let note = generatedEvent.note;
+
       if (this.props.formatting.transposeOutOfRangeNotes) {
-        if (!supportedNoteSet.has(e.note)) {
+        if (!supportedNoteSet.has(note)) {
           // Build transpose memo incrementally
-          if (!transposeMemo.has(e.note)) {
+          if (!transposeMemo.has(note)) {
             // Find the first supported note that is an integer octave from the note
             let transposeCandidate: MidiNote | null = null;
             for (let suppNote of Array.from(supportedNoteSet)) {
-              if ((suppNote - e.note) % 12 === 0) {
+              if ((suppNote - note) % 12 === 0) {
                 transposeCandidate = suppNote;
                 break;
               }
             }
 
             if (transposeCandidate) {
-              transposeMemo.set(e.note, transposeCandidate);
+              transposeMemo.set(note, transposeCandidate);
             }
           }
 
-          const transposed = transposeMemo.get(e.note);
+          const transposed = transposeMemo.get(note);
           if (transposed) {
-            e.note = transposed;
+            note = transposed;
             transposedCount++;
           }
         }
       }
 
-      if (supportedNoteSet.has(e.note)) {
-        supportedEvents.push(e);
-        if (e.absTimeSeconds > lastAbsoluteTime) {
-          lastAbsoluteTime = e.absTimeSeconds;
+      if (supportedNoteSet.has(note)) {
+        generatedEvent.note = note;
+        supportedEvents.push(generatedEvent);
+        if (generatedEvent.absTimeSeconds > lastAbsoluteTime) {
+          lastAbsoluteTime = generatedEvent.absTimeSeconds;
         }
       } else {
-        unsupportedEvents.push(e);
+        unsupportedEvents.push(generatedEvent);
       }
     });
 

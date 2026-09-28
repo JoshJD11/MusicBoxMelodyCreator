@@ -33,7 +33,7 @@ export function MusicBoxSvgFormatEditor(props: IMusicBoxSvgFormatEditorProps) {
       <div className={"mb-settingLayout"}>
         <div className={"mb-settingGroup"}>
           <Label>
-            Sheet width (mm)
+            Max strip length / sheet width (mm)
             <NumericInput
               value={options.pageWidthMm}
               onValueChange={(num) => {
@@ -107,8 +107,9 @@ export function MusicBoxSvgFormatEditor(props: IMusicBoxSvgFormatEditorProps) {
             }}
           />
           <Callout>
-            <p>Letter size: 216 x 279 mm</p>
-            <p>A4 size: 210 x 297 mm</p>
+            <p>Strips are drawn horizontally, one per row.</p>
+            <p>A4 landscape: 297 x 210 mm</p>
+            <p>Letter landscape: 279 x 216 mm</p>
           </Callout>
         </div>
       </div>

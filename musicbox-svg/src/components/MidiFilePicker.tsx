@@ -8,6 +8,10 @@ import MidiNoteHistogram from './MidiNoteHistogram';
 export interface IMidiFilePickerProps {
     fileName?: string;
     midiFile?: MidiFile;
+
+    /** Called as soon as a file is picked, before it has been read and parsed. */
+    onFileLoadStarted?(): void;
+
     onFileLoaded?(fileName: string, midiFile: MidiFile): void;
 }
 
@@ -66,6 +70,9 @@ export default class MidiFilePicker extends React.Component<IMidiFilePickerProps
 
     private openFile(file: File) {
         this.setState({ fileName: file.name });
+        if (this.props.onFileLoadStarted) {
+            this.props.onFileLoadStarted();
+        }
 
         var reader = new FileReader();
         reader.onload = () => {

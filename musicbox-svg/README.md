@@ -30,3 +30,19 @@ The build is minified and the filenames include the hashes.<br />
 Your app is ready to be deployed!
 
 See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+
+## License
+
+This project is licensed under the GNU General Public License v3.0 (GPLv3).
+See the [LICENSE](./LICENSE) file for the full text.
+
+### Modifications
+
+This project is a modified version of [musicbox-svg](https://github.com/SabinT/musicbox-svg),
+originally created by SabinT. It is distributed here under the terms
+of the GPLv3, as required by the original license.
+
+Changes made by [JoshJD11] on [2026-09-27]:
+- Added a playback feature to preview the generated melody on a virtual piano before downloading.
+- Redesigned the UI for a cleaner, more polished look.
+- Replaced SVG export with DXF export, allowing the strip to be cut automatically in free software such as Silhouette Studio.

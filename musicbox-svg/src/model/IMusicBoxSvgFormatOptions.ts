@@ -3,13 +3,14 @@
  */
 export interface IMusicBoxSvgFormatOptions {
   /**
-  * Max sheet width, used for placing vertical strips side by side.
-  * Only non-zero values have any effect.
+   * Max sheet width, used for breaking a horizontal strip into multiple pieces.
+   * Also bounds the melody length of a single strip.
+   * Only non-zero values have any effect.
    */
   pageWidthMm: number;
 
   /**
-  * Max sheet height, used for breaking a vertical strip into multiple pieces.
+   * Max sheet height, used for placing horizontal strips in rows.
    */
   pageHeightMm: number;
 

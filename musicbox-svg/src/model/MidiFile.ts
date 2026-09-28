@@ -374,6 +374,8 @@ export default class MidiFile {
 
     public loadFromBuffer(buffer: ArrayBuffer) {
         this.chunks = [];
+        this.tracks = [];
+        this.header = undefined;
         this.midiStats = this.getInitialMidiStats();
 
         let currentPos: number = 0;

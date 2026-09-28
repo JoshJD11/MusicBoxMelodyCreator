@@ -142,6 +142,20 @@ export class ChannelMidiEvent extends BaseMidiEvent {
 export class NoteMidiEvent extends ChannelMidiEvent {
     public note: MidiNote = 0;
     public velocity: number = 0;
+
+    /**
+     * Returns an independent copy of this event, for consumers that need to adjust
+     * a note (for example, transposing it) without altering the parsed MIDI data.
+     */
+    public copy(): NoteMidiEvent {
+        const copied = new NoteMidiEvent(this.deltaTime);
+        copied.channelMessageType = this.channelMessageType;
+        copied.channel = this.channel;
+        copied.absTimeSeconds = this.absTimeSeconds;
+        copied.note = this.note;
+        copied.velocity = this.velocity;
+        return copied;
+    }
 }
 
 export class ControllerMidiEvent extends ChannelMidiEvent {

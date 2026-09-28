@@ -110,6 +110,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
         <MidiFilePicker
           fileName={this.state.fileName}
           midiFile={this.state.midiFile}
+          onFileLoadStarted={() => this.onMidiDataLoadStarted()}
           onFileLoaded={(filename, midiFile) =>
             this.onMidiDataLoaded(filename, midiFile)
           }
@@ -184,7 +185,6 @@ export default class MusicBoxSheetGenerator extends React.Component<
               id="settings-tabs"
               key={"settings-tabs"}
               renderActiveTabPanelOnly={true}
-              vertical={true}
             >
               <Tab id="file-picker-tab" title="MIDI File" panel={filePicker} />
               <Tab
@@ -202,7 +202,6 @@ export default class MusicBoxSheetGenerator extends React.Component<
                 title="3D Printable Fischer Price"
                 panel={fischerPriceSettings}
               />
-              <Tabs.Expander />
             </Tabs>
           </aside>
           {this.state.midiDataAvailable && this.state.midiFile ? (
@@ -283,12 +282,34 @@ export default class MusicBoxSheetGenerator extends React.Component<
     );
   }
 
+  private onMidiDataLoadStarted() {
+    // The previous melody is dropped the moment another file is picked, before it
+    // is even parsed, so that the layout and the piano can never show or render
+    // the song that was loaded before.
+    this.stopPlaybackSources();
+    this.playbackEndTime = 0;
+
+    this.setState({
+      midiFile: undefined,
+      fileName: undefined,
+      midiJson: "",
+      midiDataAvailable: false,
+      playbackState: "stopped",
+    });
+  }
+
   private onMidiDataLoaded(fileName: string, midiFile: MidiFile) {
+    // A new melody starts from a clean slate: drop any note still scheduled from
+    // the previous file so that pressing play renders this file, not the last one.
+    this.stopPlaybackSources();
+    this.playbackEndTime = 0;
+
     this.setState({
       midiFile: midiFile,
       fileName: fileName,
       midiJson: MidiJsonConverter.GetJson(midiFile),
       midiDataAvailable: true,
+      playbackState: "stopped",
     });
   }
 

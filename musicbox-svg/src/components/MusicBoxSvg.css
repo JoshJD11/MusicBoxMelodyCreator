@@ -1,7 +1,11 @@
+/* One scroll area for every sheet instead of one per sheet. */
+.mb-musicBoxSvgPages {
+    max-width: 100%;
+    overflow: auto;
+}
+
 .mb-musicBoxSvgWrapper {
     padding: 16px;
-    overflow: scroll;
-    max-width: inherit;
     box-sizing: border-box;
     max-width: 100%;
 }
