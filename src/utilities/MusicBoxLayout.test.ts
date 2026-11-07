@@ -1,0 +1,289 @@
+import fs from 'fs';
+import path from 'path';
+import MidiFile from '../model/MidiFile';
+import { BuiltInProfiles, IMusicBoxProfile } from '../model/IMusicBoxProfile';
+import { IMusicBoxSvgFormatOptions } from '../model/IMusicBoxSvgFormatOptions';
+import {
+    buildSheets, buildStripGeometry, computeMusicBoxLayout, CUT_CLEARANCE_MM, getNoteLinePositions, IMusicBoxLayout,
+    JIGSAW_WIDTH_MM, paginateNotes, STRIP_SPACING_MM,
+} from './MusicBoxLayout';
+import { IMusicBoxNote } from './MusicBoxNotes';
+
+const FORMAT: IMusicBoxSvgFormatOptions = {
+    pageWidthMm: 250,
+    pageHeightMm: 200,
+    startPaddingMm: 10,
+    renderBorder: true,
+    omitPageBoundaries: false,
+    transposeOutOfRangeNotes: true,
+    jigsawJoiners: false,
+    loopMode: false,
+};
+
+const FORMAT_VARIANTS: { [name: string]: IMusicBoxSvgFormatOptions } = {
+    default: FORMAT,
+    jigsaw: { ...FORMAT, jigsawJoiners: true },
+    jigsawLoop: { ...FORMAT, jigsawJoiners: true, loopMode: true },
+    omitBoundaries: { ...FORMAT, omitPageBoundaries: true },
+    noTranspose: { ...FORMAT, transposeOutOfRangeNotes: false },
+    unlimited: { ...FORMAT, pageWidthMm: 0, pageHeightMm: 0 },
+    letter190x277: { ...FORMAT, pageWidthMm: 190, pageHeightMm: 277 },
+    narrow85: { ...FORMAT, pageWidthMm: 85, pageHeightMm: 3000 },
+    smallPadding: { ...FORMAT, startPaddingMm: 3 },
+    mirrored: { ...FORMAT, mirrorVertically: true },
+    mirroredJigsawLoop: { ...FORMAT, mirrorVertically: true, jigsawJoiners: true, loopMode: true },
+};
+
+const SAMPLES = [
+    'happy_birthday.mid',
+    'The Lonely Man (The Incredible Hulk 1978) Finished Version.mid',
+    'You are my sunshine.mid',
+];
+
+const EPSILON = 1e-9;
+
+function loadSample(name: string): MidiFile {
+    const b = fs.readFileSync(path.resolve(__dirname, '../../samples', name));
+    const midiFile = new MidiFile();
+    midiFile.loadFromBuffer(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength));
+    return midiFile;
+}
+
+function notesAt(times: number[], note = 60): IMusicBoxNote[] {
+    return times.map(t => ({
+        note, originalNote: note, timeSeconds: t, velocity: 100, durationSeconds: 0.5, channel: 0, trackIndex: 0,
+    }));
+}
+
+/** Checks every physical guarantee of a layout. */
+function expectPhysicallyValid(layout: IMusicBoxLayout, profile: IMusicBoxProfile, format: IMusicBoxSvgFormatOptions) {
+    const mmPerSecond = profile.millimetersPerSecond;
+    const radius = profile.holeDiameterMm / 2;
+    const firstPageStart = layout.pages[0].startTimeInSeconds;
+
+    // Every punched note is on exactly one page, in order, and pages are contiguous.
+    expect(layout.pages.flatMap(p => p.notes)).toEqual(layout.extraction.notes);
+    for (let i = 1; i < layout.pages.length; i++) {
+        expect(layout.pages[i].startTimeInSeconds).toBe(layout.pages[i - 1].endTimeInSeconds);
+    }
+
+    const strips = layout.sheets.flatMap(sheet => sheet.strips.map(strip => ({ sheet, strip })));
+    expect(strips.length).toBe(layout.pages.length);
+
+    let stripStartMm = 0;
+    strips.forEach(({ sheet, strip }, i) => {
+        const geometry = strip.geometry;
+        const page = layout.pages[i];
+
+        geometry.circles.forEach((circle, j) => {
+            // The hole is at the exact position of its note on the whole tape.
+            const absoluteMm = stripStartMm + circle.cx;
+            expect(Math.abs(absoluteMm - (page.notes[j].timeSeconds - firstPageStart) * mmPerSecond)).toBeLessThan(1e-6);
+
+            // The hole is completely inside the strip, away from the cuts.
+            const leadingLimit = i === 0 ? format.startPaddingMm : CUT_CLEARANCE_MM;
+            expect(circle.cx - radius).toBeGreaterThanOrEqual(leadingLimit - EPSILON);
+            expect(circle.cx + radius + CUT_CLEARANCE_MM).toBeLessThanOrEqual(geometry.lengthMm + EPSILON);
+
+            // ... and inside the paper width.
+            expect(circle.cy - radius).toBeGreaterThan(0);
+            expect(circle.cy + radius).toBeLessThan(profile.paperWidthMm);
+            expect(circle.r).toBe(radius);
+        });
+
+        // Nothing goes outside the sheet.
+        const maxX = Math.max(0, ...geometry.lines.map(l => Math.max(l.x1, l.x2)), ...geometry.circles.map(c => c.cx + c.r));
+        expect(maxX).toBeLessThanOrEqual(sheet.widthMm + EPSILON);
+        expect(geometry.extentMm).toBeLessThanOrEqual(sheet.widthMm + EPSILON);
+        expect(strip.offsetYMm + profile.paperWidthMm).toBeLessThanOrEqual(sheet.heightMm + EPSILON);
+
+        stripStartMm += geometry.lengthMm;
+    });
+
+    expect(Math.abs(layout.totalPaperLengthMm - stripStartMm)).toBeLessThan(1e-6);
+}
+
+describe('layout of the sample songs', () => {
+    SAMPLES.forEach(sample => {
+        Object.keys(BuiltInProfiles).forEach(profileKey => {
+            Object.keys(FORMAT_VARIANTS).forEach(formatKey => {
+                it(`${sample} / ${profileKey} / ${formatKey} is physically valid`, () => {
+                    const profile = BuiltInProfiles[profileKey];
+                    const format = FORMAT_VARIANTS[formatKey];
+                    const layout = computeMusicBoxLayout(loadSample(sample), profile, format);
+                    expect(layout.extraction.notes.length).toBeGreaterThan(0);
+                    expectPhysicallyValid(layout, profile, format);
+                });
+            });
+        });
+    });
+
+    it('is deterministic and leaves the MIDI file untouched', () => {
+        const midiFile = loadSample(SAMPLES[1]);
+        const before = JSON.stringify(midiFile.getTracks());
+        const first = computeMusicBoxLayout(midiFile, BuiltInProfiles['fifteenNote'], FORMAT);
+        const second = computeMusicBoxLayout(midiFile, BuiltInProfiles['fifteenNote'], FORMAT);
+        expect(second).toEqual(first);
+        expect(JSON.stringify(midiFile.getTracks())).toBe(before);
+    });
+});
+
+describe('paginateNotes', () => {
+    const profile = BuiltInProfiles['thirtyNote']; // 20 mm/s, 2 mm holes
+    const format: IMusicBoxSvgFormatOptions = { ...FORMAT, pageWidthMm: 100, startPaddingMm: 10 };
+    // First page starts at -(10 + 1) / 20 s = -0.55 s and can hold 100 mm = 5 s, i.e. until 4.45 s.
+
+    it('starts the first hole exactly at the start padding', () => {
+        const [page] = paginateNotes(notesAt([0, 1]), profile, format);
+        expect(page.startTimeInSeconds).toBe(-0.55);
+    });
+
+    it('cuts in the middle between two notes when there is room', () => {
+        // The hole at 4.3 s ends at 4.35 s, + 0.5 mm clearance (0.025 s) = 4.375 s <= 4.45 s: it fits.
+        // The note at 6 s doesn't. The middle (5.15 s) is past the end of the page, so the cut
+        // goes at the end of the page (4.45 s).
+        const pages = paginateNotes(notesAt([0, 4.3, 6]), profile, format);
+        expect(pages.map(p => p.notes.length)).toEqual([2, 1]);
+        expect(pages[0].endTimeInSeconds).toBeCloseTo(4.45, 12);
+
+        // With notes closer to each other, the cut is exactly in the middle.
+        const centered = paginateNotes(notesAt([0, 3, 5]), profile, format);
+        expect(centered[0].endTimeInSeconds).toBeCloseTo(4, 12);
+    });
+
+    it('never cuts closer than the clearance to a hole', () => {
+        // A hole at 4.40 s needs until 4.40 + 0.05 + 0.025 = 4.475 s > 4.45 s: it goes to the next page,
+        // and the cut must leave room before it: at most 4.40 - 0.075 = 4.325 s.
+        const pages = paginateNotes(notesAt([0, 4.4]), profile, format);
+        expect(pages.map(p => p.notes.length)).toEqual([1, 1]);
+        expect(pages[0].endTimeInSeconds).toBeCloseTo(2.2, 12); // the middle between 0 and 4.4
+    });
+
+    it('moves a whole chord to the next page instead of cutting through it', () => {
+        // The note at 4.36 s fits (until 4.435 s), the one at 4.39 s doesn't (4.465 s). They are only
+        // 0.03 s (0.6 mm) apart: any cut between them would cut through a hole. Both go to the next page.
+        const notes = notesAt([0, 4.36, 4.39]);
+        notes[2].note = 64;
+        const pages = paginateNotes(notes, profile, format);
+        expect(pages.map(p => p.notes.map(n => n.timeSeconds))).toEqual([[0], [4.36, 4.39]]);
+        expect(pages[0].endTimeInSeconds).toBeCloseTo(2.18, 12);
+    });
+
+    it('fails with a clear error when no cut is possible', () => {
+        // Notes every 0.05 s (1 mm) on different lines: no gap of 2 * (1 + 0.5) mm anywhere.
+        const times = Array.from({ length: 200 }, (_, i) => i * 0.05);
+        const notes = notesAt(times).map((n, i) => ({ ...n, note: profile.supportedNotes[i % 30] }));
+        expect(() => paginateNotes(notes, profile, format)).toThrow(/Page size too small/);
+    });
+
+    it('reserves room for the jigsaw tab', () => {
+        const pages = paginateNotes(notesAt([0, 4.3, 6]), profile, { ...format, jigsawJoiners: true });
+        // 98 mm usable = 4.9 s: until 4.35 s. The hole at 4.3 s (+ 0.075 s) doesn't fit anymore.
+        expect(pages.map(p => p.notes.length)).toEqual([1, 2]);
+        expect(pages[0].endTimeInSeconds - pages[0].startTimeInSeconds).toBeLessThanOrEqual((100 - JIGSAW_WIDTH_MM) / 20);
+    });
+
+    it('adds 0.5 s of blank paper after the last note when there is room', () => {
+        const [page] = paginateNotes(notesAt([0, 1]), profile, format);
+        expect(page.endTimeInSeconds).toBe(1.5);
+        const [unlimited] = paginateNotes(notesAt([0, 100]), profile, { ...format, pageWidthMm: 0 });
+        expect(unlimited.endTimeInSeconds).toBe(100.5);
+    });
+
+    it('requires at least one note', () => {
+        expect(() => paginateNotes([], profile, format)).toThrow(/No supported MIDI notes/);
+    });
+});
+
+describe('buildSheets', () => {
+    function stripsOf(count: number, lengthMm = 100) {
+        return Array.from({ length: count }, () => ({ lengthMm, extentMm: lengthMm, lines: [], circles: [] }));
+    }
+
+    it('fits as many strips as possible: spacing is only needed between strips', () => {
+        const fifteen = BuiltInProfiles['fifteenNote']; // 41 mm: 4 * 41 + 3 * 10 = 194 <= 200
+        const sheets = buildSheets(stripsOf(5), fifteen, FORMAT);
+        expect(sheets.map(s => s.strips.length)).toEqual([4, 1]);
+        expect(sheets[0].strips.map(s => s.offsetYMm)).toEqual([0, 51, 102, 153]);
+
+        const thirty = BuiltInProfiles['thirtyNote']; // 70.1 mm: 2 strips need 150.2 mm
+        expect(buildSheets(stripsOf(3), thirty, { ...FORMAT, pageHeightMm: 150.2 }).map(s => s.strips.length)).toEqual([2, 1]);
+        expect(buildSheets(stripsOf(3), thirty, { ...FORMAT, pageHeightMm: 150.1 }).map(s => s.strips.length)).toEqual([1, 1, 1]);
+    });
+
+    it('rejects sheets lower than one strip', () => {
+        expect(() => buildSheets(stripsOf(1), BuiltInProfiles['thirtyNote'], { ...FORMAT, pageHeightMm: 70 }))
+            .toThrow(/at least 70.10 mm/);
+    });
+
+    it('sizes unlimited sheets to their content', () => {
+        const thirty = BuiltInProfiles['thirtyNote'];
+        const [sheet] = buildSheets(
+            [{ lengthMm: 2700, extentMm: 2702, lines: [], circles: [] }, ...stripsOf(1)],
+            thirty, { ...FORMAT, pageWidthMm: 0, pageHeightMm: 0 });
+        expect(sheet.widthMm).toBe(2702);
+        expect(sheet.heightMm).toBeCloseTo(2 * 70.1 + STRIP_SPACING_MM, 12);
+    });
+});
+
+describe('note lines', () => {
+    it('places the highest note at the top and the lowest at the bottom of the content area', () => {
+        const profile = BuiltInProfiles['thirtyNote'];
+        const positions = getNoteLinePositions(profile);
+        const offset = (profile.paperWidthMm - profile.contentWidthMm) / 2;
+        expect(positions.get(88)).toBeCloseTo(offset, 12);                          // E6
+        expect(positions.get(48)).toBeCloseTo(offset + profile.contentWidthMm, 12); // C3
+        expect(positions.size).toBe(30);
+    });
+
+    it('sorts notes numerically, not alphabetically', () => {
+        const profile: IMusicBoxProfile = { ...BuiltInProfiles['fifteenNote'], supportedNotes: [96, 100, 101, 98] };
+        const positions = getNoteLinePositions(profile);
+        const order = [96, 98, 100, 101].map(n => positions.get(n) as number);
+        expect(order).toEqual([...order].sort((a, b) => b - a));
+    });
+});
+
+describe('vertical mirror', () => {
+    SAMPLES.forEach(sample => {
+        Object.keys(BuiltInProfiles).forEach(profileKey => {
+            it(`${sample} / ${profileKey}: is the exact top-bottom reflection of each strip`, () => {
+                const profile = BuiltInProfiles[profileKey];
+                const midiFile = loadSample(sample);
+                const normal = computeMusicBoxLayout(midiFile, profile, { ...FORMAT, jigsawJoiners: true });
+                const mirrored = computeMusicBoxLayout(midiFile, profile, { ...FORMAT, jigsawJoiners: true, mirrorVertically: true });
+
+                // Same pages, sheets and strip positions: only y inside each strip changes.
+                expect(mirrored.pages).toEqual(normal.pages);
+                expect(mirrored.sheets.map(s => [s.widthMm, s.heightMm, s.strips.map(p => p.offsetYMm)]))
+                    .toEqual(normal.sheets.map(s => [s.widthMm, s.heightMm, s.strips.map(p => p.offsetYMm)]));
+
+                const w = profile.paperWidthMm;
+                normal.sheets.forEach((sheet, i) => sheet.strips.forEach((strip, j) => {
+                    const m = mirrored.sheets[i].strips[j].geometry;
+                    expect(m.lengthMm).toBe(strip.geometry.lengthMm);
+                    expect(m.circles).toEqual(strip.geometry.circles.map(c => ({ cx: c.cx, cy: w - c.cy, r: c.r })));
+                    expect(m.lines).toEqual(strip.geometry.lines.map(l => ({ x1: l.x1, y1: w - l.y1, x2: l.x2, y2: w - l.y2 })));
+                }));
+            });
+        });
+    });
+
+    it('puts the lowest note at the top', () => {
+        const profile = BuiltInProfiles['thirtyNote'];
+        const offset = (profile.paperWidthMm - profile.contentWidthMm) / 2;
+        const notes = [{ note: 48, originalNote: 48, timeSeconds: 0, velocity: 100, durationSeconds: 1, channel: 0, trackIndex: 0 }];
+        const [page] = paginateNotes(notes, profile, FORMAT);
+        const normal = buildStripGeometry(page, 1, profile, FORMAT);
+        const mirrored = buildStripGeometry(page, 1, profile, { ...FORMAT, mirrorVertically: true });
+        expect(normal.circles[0].cy).toBeCloseTo(profile.paperWidthMm - offset, 12); // C3 at the bottom
+        expect(mirrored.circles[0].cy).toBeCloseTo(offset, 12);                       // C3 at the top
+    });
+
+    it('changes nothing when disabled', () => {
+        const midiFile = loadSample(SAMPLES[2]);
+        const profile = BuiltInProfiles['fifteenNote'];
+        expect(computeMusicBoxLayout(midiFile, profile, { ...FORMAT, mirrorVertically: false }))
+            .toEqual(computeMusicBoxLayout(midiFile, profile, FORMAT));
+    });
+});

@@ -1,0 +1,10 @@
+/* Settings are always laid out in a single column. */
+.mb-settingLayout {
+    display: flex;
+    flex-direction: column;
+}
+
+.mb-settingGroup {
+    width: 100%;
+    margin-top: 8px;
+}
