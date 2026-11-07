@@ -1,17 +1,29 @@
 import './Common.css';
 import { IMusicBoxProfile, BuiltInProfiles, validateMusicBoxProfile } from '../model/IMusicBoxProfile';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { shallowEqual } from '../utilities/shallowEqual';
+import { UnappliedChanges } from './UnappliedChanges';
 import { Card, NumericInput, Button, Label, H4, Callout, Menu, MenuItem, Popover, Position, Intent } from '@blueprintjs/core';
 import { MidiNote } from '../model/MidiConstants';
 
 export interface IMusicBoxProfileEditorProps {
     profile: IMusicBoxProfile;
     onChange(profile: IMusicBoxProfile): void;
+    /** Called when the edited values start or stop differing from the applied ones. */
+    onDirtyChange?(dirty: boolean): void;
 }
 
 export function MusicBoxProfileEditor(props: IMusicBoxProfileEditorProps) {
     const [profile, setProfile] = useState(props.profile);
     const errors = validateMusicBoxProfile(profile);
+    const dirty = !shallowEqual(profile, props.profile);
+    const { onDirtyChange } = props;
+
+    useEffect(() => {
+        if (onDirtyChange) {
+            onDirtyChange(dirty);
+        }
+    }, [dirty, onDirtyChange]);
 
     const onApplyProfile = () => {
         if (errors.length === 0 && props.onChange) {
@@ -42,6 +54,13 @@ export function MusicBoxProfileEditor(props: IMusicBoxProfileEditorProps) {
     return (
         <Card className={'mb-MusicBoxProfileEditor'}>
             <H4><span>{profileSelectionPopOver} Music Box Profile: {profile.name}</span></H4>
+            {dirty && (
+                <UnappliedChanges
+                    canApply={errors.length === 0}
+                    onApply={onApplyProfile}
+                    onDiscard={() => setProfile(props.profile)}
+                />
+            )}
             <div className={'mb-settingLayout'}>
                 <div className={'mb-settingGroup'}>
                     <Label>

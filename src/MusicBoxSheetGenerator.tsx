@@ -3,7 +3,9 @@ import "./MusicBoxSheetGenerator.css";
 import {
   Button,
   ButtonGroup,
+  Callout,
   Card,
+  Intent,
   Collapse,
   NonIdealState,
   Pre,
@@ -58,6 +60,9 @@ interface IAppState {
   showMidiJson: boolean;
   playbackState: PlaybackState;
   selectedTab: SettingsTab;
+  /** Settings panels with edited values that have not been applied yet. */
+  unappliedPaper: boolean;
+  unappliedLayout: boolean;
 }
 
 type SettingsTab = "file-picker-tab" | "paper-settings-tab" | "format-settings-tab" | "3d-printing-tab";
@@ -81,9 +86,44 @@ export default class MusicBoxSheetGenerator extends React.Component<
       musicBoxSvgFormatOptions: DEFAULT_FORMAT_OPTIONS,
       trackSelection: "auto",
       selectedTab: "file-picker-tab",
+      unappliedPaper: false,
+      unappliedLayout: false,
       showMidiJson: false,
       playbackState: "stopped",
     };
+  }
+
+  // Stable callbacks: the editors report changes from an effect.
+  private readonly onPaperDirtyChange = (unappliedPaper: boolean) =>
+    this.setState({ unappliedPaper });
+  private readonly onLayoutDirtyChange = (unappliedLayout: boolean) =>
+    this.setState({ unappliedLayout });
+
+  private layoutCache?: {
+    inputs: [MidiFile, IMusicBoxProfile, IMusicBoxSvgFormatOptions, TrackSelection];
+    result: { sheets?: ISheet[]; error?: string };
+  };
+
+  /** Layout of the current settings (cached while they don't change). */
+  private getLayout(): { sheets?: ISheet[]; error?: string } | null {
+    const { midiFile, musicBoxProfile, musicBoxSvgFormatOptions, trackSelection } = this.state;
+    if (!midiFile) {
+      return null;
+    }
+    const inputs: [MidiFile, IMusicBoxProfile, IMusicBoxSvgFormatOptions, TrackSelection] =
+      [midiFile, musicBoxProfile, musicBoxSvgFormatOptions, trackSelection];
+    const cached = this.layoutCache;
+    if (cached && cached.inputs.every((value, i) => value === inputs[i])) {
+      return cached.result;
+    }
+    let result: { sheets?: ISheet[]; error?: string };
+    try {
+      result = { sheets: computeMusicBoxLayout(midiFile, musicBoxProfile, musicBoxSvgFormatOptions, trackSelection).sheets };
+    } catch (error) {
+      result = { error: error instanceof Error ? error.message : String(error) };
+    }
+    this.layoutCache = { inputs, result };
+    return result;
   }
 
   public componentWillUnmount() {
@@ -125,6 +165,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
       <div className="mb-settingsTab-container">
         <MusicBoxProfileEditor
           profile={this.state.musicBoxProfile}
+          onDirtyChange={this.onPaperDirtyChange}
           onChange={(musicBoxProfile) => {
             this.player.stop();
             this.setState({ musicBoxProfile });
@@ -137,6 +178,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
       <div className="mb-settingsTab-container">
         <MusicBoxSvgFormatEditor
           options={this.state.musicBoxSvgFormatOptions}
+          onDirtyChange={this.onLayoutDirtyChange}
           onChange={(musicBoxSvgFormatOptions) => {
             this.player.stop();
             this.setState({ musicBoxSvgFormatOptions });
@@ -175,6 +217,12 @@ export default class MusicBoxSheetGenerator extends React.Component<
     }
 
     const isPlaying = this.state.playbackState === "playing";
+    const layout = this.getLayout();
+    const layoutError = layout ? layout.error : undefined;
+    const unappliedPanels = [
+      this.state.unappliedPaper ? "Paper/Music Box Settings" : null,
+      this.state.unappliedLayout ? "Layout/Pagination" : null,
+    ].filter((name): name is string => name !== null);
 
     return (
       <div className="mb-appRoot">
@@ -234,6 +282,8 @@ export default class MusicBoxSheetGenerator extends React.Component<
                     <Button
                       icon={"download"}
                       text={"Download DXF(s)"}
+                      disabled={!!layoutError}
+                      title={layoutError ? "Fix the settings first: " + layoutError : undefined}
                       onClick={() => this.downloadDxfs()}
                     />
                     <Button
@@ -255,6 +305,12 @@ export default class MusicBoxSheetGenerator extends React.Component<
                       Copy MIDI Json
                     </Button>
                   </ButtonGroup>
+                  {unappliedPanels.length > 0 && (
+                    <Callout intent={Intent.WARNING} className="mb-unappliedNotice">
+                      Settings not applied yet: {unappliedPanels.join(", ")}. The preview, the piano
+                      and the DXF use the last applied values.
+                    </Callout>
+                  )}
                   <Collapse isOpen={this.state.showMidiJson}>
                     <Pre className="mb-debugMessage">{this.state.midiJson}</Pre>
                   </Collapse>
@@ -320,20 +376,10 @@ export default class MusicBoxSheetGenerator extends React.Component<
   }
 
   private downloadDxfs() {
-    if (!this.state.midiFile) {
-      return;
-    }
-
-    let sheets: ISheet[];
-    try {
-      sheets = computeMusicBoxLayout(
-        this.state.midiFile,
-        this.state.musicBoxProfile,
-        this.state.musicBoxSvgFormatOptions,
-        this.state.trackSelection
-      ).sheets;
-    } catch {
-      // The preview already shows the error.
+    const layout = this.getLayout();
+    const sheets = layout && layout.sheets;
+    if (!sheets) {
+      // The preview shows the error and the button is disabled.
       return;
     }
 

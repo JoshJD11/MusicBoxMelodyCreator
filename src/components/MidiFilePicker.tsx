@@ -53,6 +53,9 @@ export default class MidiFilePicker extends React.Component<IMidiFilePickerProps
         if (target.files && target.files.length > 0 && target.files[0]) {
             this.openFile(target.files[0]);
         }
+        // Browsers don't fire "change" when the same file is picked again (e.g. after editing
+        // it): clear the input so that picking it again always reloads it.
+        target.value = '';
     }
 
     private openFile(file: File) {

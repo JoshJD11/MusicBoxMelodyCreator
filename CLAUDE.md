@@ -79,6 +79,11 @@ archivo .mid
 - **Audio** (`PianoPlayer.ts`): ganancia 1.0 → limitador (−12 dB, 20:1, ataque 1 ms) → altavoces. Está
   medido con render offline de los samples: +13 a +16 dB respecto a la versión original y pico ≤ 0.82,
   sin saturación. Si cambias la cadena, vuelve a medir.
+- **Ajustes con Apply**: los paneles de ajustes se mantienen montados (ocultos) al cambiar de pestaña,
+  para que los cambios sin aplicar no se pierdan; la vista 3D solo se monta con su pestaña abierta. Si
+  hay cambios sin aplicar se avisa en el panel (Apply / Discard) y junto a Download, porque la vista
+  previa, el piano y el DXF usan siempre los valores aplicados. Download se desactiva si la tira no se
+  puede generar. Hay tests de regresión de todo esto en `MusicBoxSheetGenerator.test.tsx`.
 - **UI**: siempre en **una sola columna** (preferencia del usuario). `MusicBoxSheetGenerator.tsx` (componente raíz). Los editores de perfil y formato validan con
   `validateMusicBoxProfile` / `validateFormatOptions`. La vista 3D (Fischer Price) es experimental,
   usa datos de ejemplo y se carga en diferido (`React.lazy`, three.js en un chunk aparte).

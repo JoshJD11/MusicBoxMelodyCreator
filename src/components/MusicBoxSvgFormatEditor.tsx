@@ -1,5 +1,5 @@
 import "./Common.css";
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Card,
   NumericInput,
@@ -14,15 +14,27 @@ import {
   IMusicBoxSvgFormatOptions,
   validateFormatOptions,
 } from "../model/IMusicBoxSvgFormatOptions";
+import { shallowEqual } from "../utilities/shallowEqual";
+import { UnappliedChanges } from "./UnappliedChanges";
 
 export interface IMusicBoxSvgFormatEditorProps {
   options: IMusicBoxSvgFormatOptions;
   onChange(options: IMusicBoxSvgFormatOptions): void;
+  /** Called when the edited values start or stop differing from the applied ones. */
+  onDirtyChange?(dirty: boolean): void;
 }
 
 export function MusicBoxSvgFormatEditor(props: IMusicBoxSvgFormatEditorProps) {
   const [options, setOptions] = useState(props.options);
   const errors = validateFormatOptions(options);
+  const dirty = !shallowEqual(options, props.options);
+  const { onDirtyChange } = props;
+
+  useEffect(() => {
+    if (onDirtyChange) {
+      onDirtyChange(dirty);
+    }
+  }, [dirty, onDirtyChange]);
 
   const onApplyChanges = () => {
     if (errors.length === 0 && props.onChange) {
@@ -35,6 +47,13 @@ export function MusicBoxSvgFormatEditor(props: IMusicBoxSvgFormatEditorProps) {
       <H4>
         <span>Layout Options</span>
       </H4>
+      {dirty && (
+        <UnappliedChanges
+          canApply={errors.length === 0}
+          onApply={onApplyChanges}
+          onDiscard={() => setOptions(props.options)}
+        />
+      )}
       <div className={"mb-settingLayout"}>
         <div className={"mb-settingGroup"}>
           <Label>

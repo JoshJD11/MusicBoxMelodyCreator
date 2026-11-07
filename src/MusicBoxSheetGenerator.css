@@ -145,7 +145,9 @@
 .mb-pageTag { flex: 0 0 auto; padding: 6px 8px; color: var(--mb-green); border: 1px solid var(--mb-line); font-size: 9px; font-weight: 700; letter-spacing: 1px; }
 
 .mb-musicBox-preview { display: flex; min-width: 0; max-width: 100%; padding-top: 18px; flex-direction: column; align-items: stretch; }
-.mb-previewActions { display: flex; width: 100%; align-items: center; justify-content: center; margin-bottom: 18px; overflow-x: auto; }
+.mb-previewActions { display: flex; width: 100%; flex-direction: column; align-items: center; gap: 12px; margin-bottom: 18px; overflow-x: auto; }
+.mb-previewActions > .bp3-collapse { width: 100%; }
+.mb-unappliedNotice { width: 100%; }
 .mb-previewActions .bp3-button-group { display: inline-flex; min-width: max-content; }
 .mb-previewActions .bp3-button { color: var(--mb-ink); background: #f4f2e9; box-shadow: none; }
 .mb-previewActions .bp3-button:hover { background: #e9eee7; }

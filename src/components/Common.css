@@ -8,3 +8,11 @@
     width: 100%;
     margin-top: 8px;
 }
+
+.mb-unappliedChanges {
+    margin-bottom: 12px;
+}
+
+.mb-unappliedChanges p {
+    margin-bottom: 8px;
+}

@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import React from 'react';
-import { render, fireEvent, cleanup } from '@testing-library/react';
+import { render, fireEvent, cleanup, within } from '@testing-library/react';
 import MusicBoxSheetGenerator from './MusicBoxSheetGenerator';
 import MidiFile from './model/MidiFile';
 import { BuiltInProfiles } from './model/IMusicBoxProfile';
@@ -25,6 +25,11 @@ function readBlob(blob: Blob): Promise<string> {
         reader.onload = () => resolve(reader.result as string);
         reader.readAsText(blob);
     });
+}
+
+/** The <input> of a Blueprint NumericInput inside its <label>. */
+function numericInput(label: HTMLElement): HTMLInputElement {
+    return label.closest('label')!.querySelector('input') as HTMLInputElement;
 }
 
 function pickFile(container: HTMLElement, file: File) {
@@ -108,5 +113,56 @@ describe('MusicBoxSheetGenerator (end to end)', () => {
         expect(container.textContent).toContain('Load a MIDI file to generate layout');
         tab('MIDI File');
         expect(container.textContent).not.toContain('Load a MIDI file to generate layout');
+    });
+
+    it('warns about unapplied changes, and only uses applied values for the DXF', async () => {
+        const { container, findByText, getByText, getByRole, queryByText } = render(<MusicBoxSheetGenerator />);
+        pickFile(container, new File([sampleBytes()], SAMPLE, { type: 'audio/midi' }));
+        await findByText('MIDI ready');
+
+        fireEvent.click(getByText('Layout/Pagination'));
+        const panel = () => within(getByRole('tabpanel'));
+        const widthInput = () => numericInput(panel().getByText(/Max strip length/));
+        const extMaxWidth = (dxf: string) => dxf.split('\r\n')[21]; // value after "$EXTMAX", "10"
+        const downloadFirst = async () => {
+            createdBlobs.length = 0;
+            fireEvent.click(getByText('Download DXF(s)'));
+            return readBlob(createdBlobs[0]);
+        };
+
+        fireEvent.change(widthInput(), { target: { value: '190' } });
+        expect(panel().getByText('Changes not applied yet')).toBeTruthy();
+        expect(getByText(/Settings not applied yet: Layout\/Pagination/)).toBeTruthy();
+        // Not applied: the DXF still uses the applied 250 mm.
+        expect(extMaxWidth(await downloadFirst())).toBe('250');
+
+        fireEvent.click(panel().getByText('Discard'));
+        expect(widthInput().value).toBe('250');
+        expect(queryByText('Changes not applied yet')).toBeNull();
+        expect(queryByText(/Settings not applied yet/)).toBeNull();
+
+        fireEvent.change(widthInput(), { target: { value: '190' } });
+        fireEvent.click(panel().getAllByText('Apply')[0]);
+        expect(queryByText(/Settings not applied yet/)).toBeNull();
+        expect(extMaxWidth(await downloadFirst())).toBe('190');
+    });
+
+    it('disables the download while the settings make the strips impossible', async () => {
+        const { container, findByText, getByText, getByRole } = render(<MusicBoxSheetGenerator />);
+        pickFile(container, new File([sampleBytes()], SAMPLE, { type: 'audio/midi' }));
+        await findByText('MIDI ready');
+        const download = () => getByText('Download DXF(s)').closest('button') as HTMLButtonElement;
+        expect(download().disabled).toBe(false);
+
+        fireEvent.click(getByText('Layout/Pagination'));
+        const panel = within(getByRole('tabpanel'));
+        fireEvent.change(numericInput(panel.getByText(/Sheet height/)), { target: { value: '50' } }); // < 70.1 mm strip
+        fireEvent.click(panel.getAllByText('Apply')[0]);
+        expect(download().disabled).toBe(true);
+        expect(download().title).toMatch(/Sheet height must be at least 70.10 mm/);
+
+        fireEvent.change(numericInput(within(getByRole('tabpanel')).getByText(/Sheet height/)), { target: { value: '200' } });
+        fireEvent.click(within(getByRole('tabpanel')).getAllByText('Apply')[0]);
+        expect(download().disabled).toBe(false);
     });
 });
