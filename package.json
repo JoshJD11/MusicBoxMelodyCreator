@@ -21,8 +21,8 @@
   },
   "dependencies": {
     "@blueprintjs/core": "^3.24.0",
-    "react": "^16.13.1",
-    "react-dom": "^16.13.1",
+    "react": "^16.14.0",
+    "react-dom": "^16.14.0",
     "three": "0.130.0"
   },
   "devDependencies": {

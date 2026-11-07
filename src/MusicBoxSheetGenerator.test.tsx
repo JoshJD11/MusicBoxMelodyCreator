@@ -86,4 +86,27 @@ describe('MusicBoxSheetGenerator (end to end)', () => {
         expect(getByText(/Not a valid MIDI file/)).toBeTruthy();
         expect(getByText('No MIDI loaded')).toBeTruthy();
     });
+
+    it('keeps unapplied settings when switching tabs, and only mounts the 3D view while open', () => {
+        const { container, getByText, getByLabelText } = render(<MusicBoxSheetGenerator />);
+        const tab = (name: string) => fireEvent.click(getByText(name));
+
+        tab('Layout/Pagination');
+        const mirror = getByLabelText(/Mirror strips vertically/) as HTMLInputElement;
+        expect(mirror.checked).toBe(false);
+        fireEvent.click(mirror);
+        expect(mirror.checked).toBe(true);
+
+        tab('MIDI File');
+        tab('Paper/Music Box Settings');
+        tab('Layout/Pagination');
+        expect((getByLabelText(/Mirror strips vertically/) as HTMLInputElement).checked).toBe(true);
+
+        // The experimental 3D view (WebGL) is not mounted while its tab is closed.
+        expect(container.textContent).not.toContain('Load a MIDI file to generate layout');
+        tab('3D Fischer Price (experimental)');
+        expect(container.textContent).toContain('Load a MIDI file to generate layout');
+        tab('MIDI File');
+        expect(container.textContent).not.toContain('Load a MIDI file to generate layout');
+    });
 });

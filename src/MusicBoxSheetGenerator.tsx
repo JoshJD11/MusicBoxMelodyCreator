@@ -57,7 +57,10 @@ interface IAppState {
   trackSelection: TrackSelection;
   showMidiJson: boolean;
   playbackState: PlaybackState;
+  selectedTab: SettingsTab;
 }
+
+type SettingsTab = "file-picker-tab" | "paper-settings-tab" | "format-settings-tab" | "3d-printing-tab";
 
 type AppProps = Record<string, never>;
 
@@ -77,6 +80,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
       musicBoxProfile: BuiltInProfiles["thirtyNote"],
       musicBoxSvgFormatOptions: DEFAULT_FORMAT_OPTIONS,
       trackSelection: "auto",
+      selectedTab: "file-picker-tab",
       showMidiJson: false,
       playbackState: "stopped",
     };
@@ -141,8 +145,12 @@ export default class MusicBoxSheetGenerator extends React.Component<
       </div>
     );
 
-    let fischerPriceSettings: JSX.Element;
-    if (!this.state.midiFile) {
+    let fischerPriceSettings: JSX.Element | null;
+    if (this.state.selectedTab !== "3d-printing-tab") {
+      // The settings panels stay mounted (so that unapplied edits survive a tab switch), but the
+      // 3D view only exists while its tab is open: it keeps WebGL and an animation loop running.
+      fischerPriceSettings = null;
+    } else if (!this.state.midiFile) {
       fischerPriceSettings = (
         <div className="mb-settingsTab-container mb-settingsArea">
           <Card>
@@ -189,7 +197,9 @@ export default class MusicBoxSheetGenerator extends React.Component<
               animate={true}
               id="settings-tabs"
               key={"settings-tabs"}
-              renderActiveTabPanelOnly={true}
+              selectedTabId={this.state.selectedTab}
+              onChange={(tabId) => this.setState({ selectedTab: tabId as SettingsTab })}
+              renderActiveTabPanelOnly={false}
             >
               <Tab id="file-picker-tab" title="MIDI File" panel={filePicker} />
               <Tab
@@ -205,7 +215,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
               <Tab
                 id="3d-printing-tab"
                 title="3D Fischer Price (experimental)"
-                panel={fischerPriceSettings}
+                panel={fischerPriceSettings ?? undefined}
               />
             </Tabs>
           </aside>
