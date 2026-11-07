@@ -14,7 +14,7 @@ import {
   Tabs,
 } from "@blueprintjs/core";
 import MidiFilePicker from "./components/MidiFilePicker";
-import MusicBoxSvg from "./components/MusicBoxSvg";
+import DxfPreview, { IStripFiles } from "./components/DxfPreview";
 import { MusicBoxProfileEditor } from "./components/MusicBoxProfileEditor";
 import { MusicBoxSvgFormatEditor } from "./components/MusicBoxSvgFormatEditor";
 import MidiFile from "./model/MidiFile";
@@ -23,7 +23,7 @@ import { BuiltInProfiles, IMusicBoxProfile } from "./model/IMusicBoxProfile";
 import MidiJsonConverter from "./utilities/MidiJsonConverter";
 import { buildGeneratedMusicBoxSequence } from "./utilities/MusicBoxMidi";
 import { TrackSelection } from "./utilities/MusicBoxNotes";
-import { computeMusicBoxLayout, ISheet } from "./utilities/MusicBoxLayout";
+import { computeMusicBoxLayout } from "./utilities/MusicBoxLayout";
 import { createDxf } from "./utilities/DxfExporter";
 import PianoPlayer, { PlaybackState } from "./utilities/PianoPlayer";
 
@@ -101,11 +101,14 @@ export default class MusicBoxSheetGenerator extends React.Component<
 
   private layoutCache?: {
     inputs: [MidiFile, IMusicBoxProfile, IMusicBoxSvgFormatOptions, TrackSelection];
-    result: { sheets?: ISheet[]; error?: string };
+    result: IStripFiles;
   };
 
-  /** Layout of the current settings (cached while they don't change). */
-  private getLayout(): { sheets?: ISheet[]; error?: string } | null {
+  /**
+   * Layout and DXF documents for the current settings, computed once (cached while the settings
+   * don't change): the preview draws these documents and the download saves them.
+   */
+  private getLayout(): IStripFiles | null {
     const { midiFile, musicBoxProfile, musicBoxSvgFormatOptions, trackSelection } = this.state;
     if (!midiFile) {
       return null;
@@ -116,9 +119,10 @@ export default class MusicBoxSheetGenerator extends React.Component<
     if (cached && cached.inputs.every((value, i) => value === inputs[i])) {
       return cached.result;
     }
-    let result: { sheets?: ISheet[]; error?: string };
+    let result: IStripFiles;
     try {
-      result = { sheets: computeMusicBoxLayout(midiFile, musicBoxProfile, musicBoxSvgFormatOptions, trackSelection).sheets };
+      const layout = computeMusicBoxLayout(midiFile, musicBoxProfile, musicBoxSvgFormatOptions, trackSelection);
+      result = { layout, dxfs: layout.sheets.map(createDxf) };
     } catch (error) {
       result = { error: error instanceof Error ? error.message : String(error) };
     }
@@ -274,7 +278,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
                   <p className="mb-eyebrow">PAPER SCORE</p>
                   <h2>{this.state.fileName}</h2>
                 </div>
-                <span className="mb-pageTag">SVG PREVIEW</span>
+                <span className="mb-pageTag">DXF PREVIEW</span>
               </div>
               <div className="mb-musicBox-preview">
                 <div className="mb-previewActions">
@@ -315,12 +319,12 @@ export default class MusicBoxSheetGenerator extends React.Component<
                     <Pre className="mb-debugMessage">{this.state.midiJson}</Pre>
                   </Collapse>
                 </div>
-                <MusicBoxSvg
-                  musicBoxProfile={this.state.musicBoxProfile}
-                  formatting={this.state.musicBoxSvgFormatOptions}
-                  midiFile={this.state.midiFile}
-                  trackSelection={this.state.trackSelection}
-                />
+                {layout && (
+                  <DxfPreview
+                    files={layout}
+                    paperWidthMm={this.state.musicBoxProfile.paperWidthMm}
+                  />
+                )}
               </div>
             </main>
           ) : (
@@ -377,8 +381,8 @@ export default class MusicBoxSheetGenerator extends React.Component<
 
   private downloadDxfs() {
     const layout = this.getLayout();
-    const sheets = layout && layout.sheets;
-    if (!sheets) {
+    const dxfs = layout && layout.dxfs;
+    if (!dxfs) {
       // The preview shows the error and the button is disabled.
       return;
     }
@@ -388,9 +392,10 @@ export default class MusicBoxSheetGenerator extends React.Component<
       .replace(/\.(midi|mid)$/i, "")
       .replace(/[<>:"/\\|?*]/g, "_");
 
-    sheets.forEach((sheet, i) => {
+    // Exactly the documents drawn in the preview.
+    dxfs.forEach((dxf, i) => {
       downloadTextFile(
-        createDxf(sheet),
+        dxf,
         `${baseFileName}_page_${i + 1}.dxf`,
         "application/dxf"
       );

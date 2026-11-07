@@ -22,7 +22,9 @@ una nota no suene. Por eso:
   - nada se sale de la hoja, incluida la lengüeta de las juntas tipo puzzle;
   - la posición absoluta de cada agujero en la cinta completa es `(t − inicio) × mm/s`.
 - Si un cambio debe dejar la salida igual, compara el DXF de los 3 `samples/` antes y después.
-- La vista previa SVG y el DXF salen de **la misma geometría** (`ISheet`). No generes uno a partir del otro.
+- La vista previa se dibuja **leyendo los mismos documentos DXF que se descargan** (`parseDxf`). Se
+  calculan una sola vez (`getLayout` en `MusicBoxSheetGenerator`). Lo que se ve es el archivo.
+  Comprobado: es idéntica píxel a píxel a la vista previa anterior, que se dibujaba desde la geometría.
 - El piano reproduce **exactamente** las notas perforadas (`extractMusicBoxNotes`). No tiene lógica propia.
 - `$INSUNITS=4` (mm) y las capas `CUT`/`HOLES` del DXF se mantienen a propósito: el flujo de Silhouette
   funciona así.
@@ -53,8 +55,10 @@ archivo .mid
          │                            del agujero anterior en la misma línea
          ├─ utilities/MusicBoxMidi.ts → PianoPlayer.ts (Web Audio): vista previa sonora
          └─ utilities/MusicBoxLayout.ts  paginateNotes → buildStripGeometry → buildSheets (mm, y hacia abajo)
-             ├─ components/MusicBoxSvg.tsx   vista previa (un <svg> por hoja)
-             └─ utilities/DxfExporter.ts     DXF R12 por hoja (y invertida respecto al SVG)
+             └─ utilities/DxfExporter.ts     DXF R12 por hoja (y invertida)
+                 ├─ descarga: esos mismos textos DXF
+                 └─ utilities/DxfReader.ts → components/DxfPreview.tsx  vista previa dibujada
+                                              leyendo el DXF (un <svg> por hoja)
 ```
 
 - **Parser** (`MidiFile.ts`): formatos 0, 1 y 2; timing métrico y SMPTE; SysEx y meta de longitud
