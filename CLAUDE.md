@@ -99,12 +99,15 @@ archivo .mid
   usuario): `pageWidthMm` es el largo máximo de la tira (alto de la hoja en vertical) y `pageHeightMm` el
   espacio para colocarlas lado a lado (ancho en vertical); el DXF intercambia ancho y alto. Las etiquetas y
   los errores usan `sheetDimensionNames`.
-- **Auto-tamaño al cargar un MIDI** (`fitSingleStrip`): cada carga (incluso del mismo archivo)
-  pone largo = largo de la canción redondeado hacia arriba al mm (+2 mm si hay juntas puzzle), ancho =
-  ancho del papel y borde activado: una sola tira en una hoja de su tamaño. Después el usuario puede
-  cambiar los tamaños a mano; no se recalcula hasta la siguiente carga. El editor de Layout incorpora
-  esos cambios externos con `rebaseEdits` (los campos cambiados desde fuera toman el valor nuevo y se
-  conservan los demás cambios sin aplicar).
+- **Auto-tamaño** (`fitSingleStrip`): largo = largo de la canción redondeado hacia arriba al mm (+2 mm
+  si hay juntas puzzle), ancho = ancho del papel: una sola tira en una hoja de su tamaño. Solo cambia
+  esos dos tamaños. Se recalcula **siempre** (decisión del usuario, aunque haya tamaños puestos a mano):
+  al cargar un MIDI (incluso el mismo; además activa el borde), al cambiar la pista, al aplicar
+  Paper/Music Box Settings (perfil, mm/s, agujero, papel…) y al aplicar Layout si cambia algo que altera
+  el largo (`shouldRefitSheet`: padding, transponer, percusión, juntas, loop), salvo que en ese mismo
+  Apply se hayan escrito tamaños (ganan los escritos). Espejo, orientación, borde y omitir límites no
+  recalculan. El editor de Layout incorpora los cambios externos con `rebaseEdits` (los campos cambiados
+  desde fuera toman el valor nuevo y se conservan los demás cambios sin aplicar).
 - **Agujeros**: 2.0 mm (15 notas) y 2.2 mm (30 notas), 0.2 mm más que el proyecto original (decisión
   del usuario). Los tests con cuentas a mano usan un perfil de prueba con agujeros de 2 mm.
 - **Vista previa**: en vertical, el cuadro de las hojas mide como mucho el 75% del alto de la ventana y

@@ -199,6 +199,104 @@ describe('MusicBoxSheetGenerator (end to end)', () => {
         expect(container.querySelectorAll('.mb-musicBoxSvgWrapper svg').length).toBe(1);
     });
 
+    it('fits the sheet again when the paper changes, even over sizes typed by hand', async () => {
+        const { container, findByText, getByText, getByRole } = render(<MusicBoxSheetGenerator />);
+        const panel = () => within(getByRole('tabpanel'));
+        const layoutFields = () => {
+            fireEvent.click(getByText('Layout/Pagination'));
+            return [numericInput(panel().getByText(/Max strip length/)).value, numericInput(panel().getByText(/Sheet width/)).value];
+        };
+        pickFile(container, new File([sampleBytes()], SAMPLE, { type: 'audio/midi' }));
+        await findByText('MIDI ready');
+
+        // My own sizes...
+        fireEvent.click(getByText('Layout/Pagination'));
+        fireEvent.change(numericInput(panel().getByText(/Max strip length/)), { target: { value: '190' } });
+        fireEvent.change(numericInput(panel().getByText(/Sheet width/)), { target: { value: '200' } });
+        fireEvent.click(panel().getAllByText('Apply')[0]);
+        expect(layoutFields()).toEqual(['190', '200']);
+
+        // ... are replaced by the fitted ones when another profile is selected.
+        fireEvent.click(getByText('Paper/Music Box Settings'));
+        fireEvent.click(getByText('Select profile...'));
+        fireEvent.click(await findByText('15 Note'));
+        const fifteen = BuiltInProfiles['fifteenNote'];
+        const fitted15 = fitSingleStrip(loadSampleMidi(), fifteen, DEFAULT_FORMAT);
+        expect(layoutFields()).toEqual([String(fitted15.pageWidthMm), '41']);
+        expect(container.querySelectorAll('.mb-musicBoxSvgWrapper svg').length).toBe(1);
+
+        // Faster paper: longer strip, fitted again.
+        fireEvent.click(getByText('Paper/Music Box Settings'));
+        fireEvent.change(numericInput(panel().getByText(/Millimeters per second/)), { target: { value: '25' } });
+        fireEvent.click(panel().getByText('Apply', { selector: '.mb-settingGroup button span, .mb-settingGroup button' }));
+        const faster = { ...fifteen, millimetersPerSecond: 25 };
+        const fittedFaster = fitSingleStrip(loadSampleMidi(), faster, DEFAULT_FORMAT);
+        expect(fittedFaster.pageWidthMm).toBeGreaterThan(fitted15.pageWidthMm);
+        expect(layoutFields()).toEqual([String(fittedFaster.pageWidthMm), '41']);
+
+        // The download is exactly one strip, as computed.
+        createdBlobs.length = 0;
+        fireEvent.click(getByText('Download DXF(s)'));
+        const downloaded = await Promise.all(createdBlobs.map(readBlob));
+        expect(downloaded).toEqual(computeMusicBoxLayout(loadSampleMidi(), faster, fittedFaster).drawings.map(createDxf));
+        expect(downloaded.length).toBe(1);
+    });
+
+    it('fits the sheet again when another track is selected', async () => {
+        const { container, findByText, getByText, getByRole } = render(<MusicBoxSheetGenerator />);
+        pickFile(container, new File([sampleBytes()], SAMPLE, { type: 'audio/midi' }));
+        await findByText('MIDI ready');
+        fireEvent.click(getByText('Layout/Pagination'));
+        fireEvent.change(numericInput(within(getByRole('tabpanel')).getByText(/Max strip length/)), { target: { value: '100' } });
+        fireEvent.click(within(getByRole('tabpanel')).getAllByText('Apply')[0]);
+
+        fireEvent.click(getByText('MIDI File'));
+        fireEvent.change(container.querySelector('select') as HTMLSelectElement, { target: { value: 'all' } });
+        const fitted = fitSingleStrip(loadSampleMidi(), BuiltInProfiles['thirtyNote'], DEFAULT_FORMAT, 'all');
+        fireEvent.click(getByText('Layout/Pagination'));
+        expect(numericInput(within(getByRole('tabpanel')).getByText(/Max strip length/)).value).toBe(String(fitted.pageWidthMm));
+        expect(container.querySelectorAll('.mb-musicBoxSvgWrapper svg').length).toBe(1);
+    });
+
+    it('fits the sheet again for layout options that change the length, keeping the border and typed sizes', async () => {
+        const { container, findByText, getByText, getByRole, getByLabelText } = render(<MusicBoxSheetGenerator />);
+        pickFile(container, new File([sampleBytes()], SAMPLE, { type: 'audio/midi' }));
+        await findByText('MIDI ready');
+        fireEvent.click(getByText('Layout/Pagination'));
+        const panel = () => within(getByRole('tabpanel'));
+        const length = () => numericInput(panel().getByText(/Max strip length/));
+        const across = () => numericInput(panel().getByText(/Sheet width/));
+        const padding = () => numericInput(panel().getByText(/Start padding/));
+        const apply = () => fireEvent.click(panel().getAllByText('Apply')[0]);
+        const fitted = fittedFormat();
+
+        // No border: nothing to fit again, and later fits keep it off.
+        fireEvent.click(getByLabelText('Render border'));
+        apply();
+        expect(length().value).toBe(String(fitted.pageWidthMm));
+
+        // A longer start padding makes the strip longer: fitted again, border still off.
+        fireEvent.change(padding(), { target: { value: '30' } });
+        apply();
+        const padded = fittedFormat({ ...DEFAULT_FORMAT, startPaddingMm: 30, renderBorder: false });
+        expect(padded.pageWidthMm).toBeGreaterThan(fitted.pageWidthMm);
+        expect(length().value).toBe(String(padded.pageWidthMm));
+        expect((getByLabelText('Render border') as HTMLInputElement).checked).toBe(false);
+        expect(container.querySelectorAll('.mb-musicBoxSvgWrapper line').length).toBe(0);
+
+        // Sizes typed together with a padding change are kept.
+        fireEvent.change(padding(), { target: { value: '20' } });
+        fireEvent.change(length(), { target: { value: '300' } });
+        apply();
+        expect([length().value, padding().value]).toEqual(['300', '20']);
+        expect(container.querySelectorAll('.mb-musicBoxSvgWrapper svg').length).toBe(2);
+
+        // Options that don't change the size don't touch my sizes.
+        fireEvent.click(getByLabelText(/Mirror strips/));
+        apply();
+        expect([length().value, across().value]).toEqual(['300', '70.1']);
+    });
+
     it('shows a readable error for a file that is not MIDI', async () => {
         const { container, findByText, getByText } = render(<MusicBoxSheetGenerator />);
         pickFile(container, new File(['hello'], 'notes.mid', { type: 'audio/midi' }));

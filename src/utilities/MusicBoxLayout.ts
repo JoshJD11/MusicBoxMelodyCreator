@@ -410,11 +410,10 @@ export function computeMusicBoxLayout(
 
 /**
  * Format options that put the whole song on a single strip, on a sheet of exactly its size (used
- * when a MIDI file is loaded):
+ * whenever the song or the paper changes):
  * - strip length: the song's length, rounded up to the next whole millimeter (plus the room that
  *   pagination reserves for a jigsaw tab, if enabled);
- * - sheet size across the strips: the paper width;
- * - the border is drawn, so that the paper edges are cut.
+ * - sheet size across the strips: the paper width.
  * Every other option is kept.
  */
 export function fitSingleStrip(
@@ -423,12 +422,11 @@ export function fitSingleStrip(
     format: IMusicBoxSvgFormatOptions,
     trackSelection: TrackSelection = 'auto'
 ): IMusicBoxSvgFormatOptions {
-    const fitted = { ...format, renderBorder: true };
     // Without a size limit, the whole song is one strip.
-    const unlimited = computeMusicBoxLayout(midiFile, profile, { ...fitted, pageWidthMm: 0, pageHeightMm: 0 }, trackSelection);
+    const unlimited = computeMusicBoxLayout(midiFile, profile, { ...format, pageWidthMm: 0, pageHeightMm: 0 }, trackSelection);
     const lengthMm = unlimited.totalPaperLengthMm + (format.jigsawJoiners ? JIGSAW_WIDTH_MM : 0);
     return {
-        ...fitted,
+        ...format,
         // The tolerance keeps floating point noise (e.g. 201.0000000001) from adding a millimeter.
         pageWidthMm: Math.ceil(lengthMm - 1e-9),
         pageHeightMm: profile.paperWidthMm,

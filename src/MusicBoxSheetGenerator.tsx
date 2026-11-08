@@ -15,7 +15,7 @@ import DxfPreview, { IStripFiles } from "./components/DxfPreview";
 import { MusicBoxProfileEditor } from "./components/MusicBoxProfileEditor";
 import { MusicBoxSvgFormatEditor } from "./components/MusicBoxSvgFormatEditor";
 import MidiFile from "./model/MidiFile";
-import { IMusicBoxSvgFormatOptions } from "./model/IMusicBoxSvgFormatOptions";
+import { IMusicBoxSvgFormatOptions, shouldRefitSheet } from "./model/IMusicBoxSvgFormatOptions";
 import { BuiltInProfiles, IMusicBoxProfile } from "./model/IMusicBoxProfile";
 import MidiJsonConverter from "./utilities/MidiJsonConverter";
 import { buildGeneratedMusicBoxSequence } from "./utilities/MusicBoxMidi";
@@ -154,7 +154,12 @@ export default class MusicBoxSheetGenerator extends React.Component<
           }
           onTrackSelectionChange={(trackSelection) => {
             this.player.stop();
-            this.setState({ trackSelection });
+            // Other notes, other length: the sheet is fitted again.
+            this.setState((state) => ({
+              trackSelection,
+              musicBoxSvgFormatOptions: fitFormatToSong(
+                state.midiFile, state.musicBoxProfile, state.musicBoxSvgFormatOptions, trackSelection),
+            }));
           }}
         />
       </div>
@@ -167,7 +172,13 @@ export default class MusicBoxSheetGenerator extends React.Component<
           onDirtyChange={this.onPaperDirtyChange}
           onChange={(musicBoxProfile) => {
             this.player.stop();
-            this.setState({ musicBoxProfile });
+            // Any paper setting can change the strip's length or width: the sheet is fitted again,
+            // even over sizes typed by hand.
+            this.setState((state) => ({
+              musicBoxProfile,
+              musicBoxSvgFormatOptions: fitFormatToSong(
+                state.midiFile, musicBoxProfile, state.musicBoxSvgFormatOptions, state.trackSelection),
+            }));
           }}
         />
       </div>
@@ -180,7 +191,11 @@ export default class MusicBoxSheetGenerator extends React.Component<
           onDirtyChange={this.onLayoutDirtyChange}
           onChange={(musicBoxSvgFormatOptions) => {
             this.player.stop();
-            this.setState({ musicBoxSvgFormatOptions });
+            this.setState((state) => ({
+              musicBoxSvgFormatOptions: shouldRefitSheet(state.musicBoxSvgFormatOptions, musicBoxSvgFormatOptions)
+                ? fitFormatToSong(state.midiFile, state.musicBoxProfile, musicBoxSvgFormatOptions, state.trackSelection)
+                : musicBoxSvgFormatOptions,
+            }));
           }}
         />
       </div>
@@ -339,8 +354,10 @@ export default class MusicBoxSheetGenerator extends React.Component<
       fileName,
       midiJson: MidiJsonConverter.GetJson(midiFile),
       trackSelection: "auto",
-      // Every load (even of the same file) fits the sheet to the whole song on a single strip.
-      musicBoxSvgFormatOptions: fitFormatToSong(midiFile, state.musicBoxProfile, state.musicBoxSvgFormatOptions),
+      // Every load (even of the same file) fits the sheet to the whole song on a single strip, with
+      // the paper border drawn.
+      musicBoxSvgFormatOptions: fitFormatToSong(
+        midiFile, state.musicBoxProfile, { ...state.musicBoxSvgFormatOptions, renderBorder: true }, "auto"),
     }));
   }
 
@@ -415,16 +432,20 @@ export default class MusicBoxSheetGenerator extends React.Component<
 }
 
 /**
- * Sizes that fit the whole song on one strip. If the song can't be laid out (e.g. it has no
- * playable notes), the options are kept and the preview shows the error.
+ * Sizes that fit the whole song on one strip. Without a song, or if it can't be laid out (e.g. it
+ * has no playable notes), the options are kept and the preview shows the error.
  */
 function fitFormatToSong(
-  midiFile: MidiFile,
+  midiFile: MidiFile | undefined,
   profile: IMusicBoxProfile,
-  format: IMusicBoxSvgFormatOptions
+  format: IMusicBoxSvgFormatOptions,
+  trackSelection: TrackSelection
 ): IMusicBoxSvgFormatOptions {
+  if (!midiFile) {
+    return format;
+  }
   try {
-    return fitSingleStrip(midiFile, profile, format, "auto");
+    return fitSingleStrip(midiFile, profile, format, trackSelection);
   } catch {
     return format;
   }

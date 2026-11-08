@@ -74,6 +74,25 @@ export function sheetDimensionNames(orientation: StripOrientation = 'horizontal'
     : { alongStrips: 'Sheet width', acrossStrips: 'Sheet height' };
 }
 
+/** Layout options that change the length of the song's tape, and so the sheet size that fits it. */
+const STRIP_LENGTH_OPTIONS = [
+  'startPaddingMm',
+  'transposeOutOfRangeNotes',
+  'includePercussion',
+  'jigsawJoiners',
+  'loopMode',
+] as const satisfies ReadonlyArray<keyof IMusicBoxSvgFormatOptions>;
+
+/**
+ * Whether applying `next` over `previous` must fit the sheet to the song again: an option that
+ * changes the tape's length changed, and the sheet sizes were not edited in the same change (sizes
+ * that the user has just typed win). Unset optional flags count as false.
+ */
+export function shouldRefitSheet(previous: IMusicBoxSvgFormatOptions, next: IMusicBoxSvgFormatOptions): boolean {
+  const sizesEdited = previous.pageWidthMm !== next.pageWidthMm || previous.pageHeightMm !== next.pageHeightMm;
+  return !sizesEdited && STRIP_LENGTH_OPTIONS.some(key => (previous[key] ?? false) !== (next[key] ?? false));
+}
+
 /** Returns the problems that make the options unusable (empty if they are valid). */
 export function validateFormatOptions(options: IMusicBoxSvgFormatOptions): string[] {
   const errors: string[] = [];

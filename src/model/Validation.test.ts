@@ -1,5 +1,5 @@
 import { BuiltInProfiles, validateMusicBoxProfile } from './IMusicBoxProfile';
-import { isStripOrientation, sheetDimensionNames, validateFormatOptions } from './IMusicBoxSvgFormatOptions';
+import { isStripOrientation, sheetDimensionNames, shouldRefitSheet, validateFormatOptions } from './IMusicBoxSvgFormatOptions';
 
 describe('validateMusicBoxProfile', () => {
     it('uses holes 0.2 mm larger than the original musicbox-svg profiles by default', () => {
@@ -65,5 +65,35 @@ describe('strip orientation', () => {
     it('swaps the dimension names for vertical strips', () => {
         expect(sheetDimensionNames()).toEqual({ alongStrips: 'Sheet width', acrossStrips: 'Sheet height' });
         expect(sheetDimensionNames('vertical')).toEqual({ alongStrips: 'Sheet height', acrossStrips: 'Sheet width' });
+    });
+});
+
+describe('shouldRefitSheet', () => {
+    const options = {
+        pageWidthMm: 555, pageHeightMm: 70.1, startPaddingMm: 10, renderBorder: true,
+        omitPageBoundaries: false, transposeOutOfRangeNotes: true, jigsawJoiners: false, loopMode: false,
+    };
+
+    it('refits when an option that changes the tape length changes', () => {
+        expect(shouldRefitSheet(options, { ...options, startPaddingMm: 15 })).toBe(true);
+        expect(shouldRefitSheet(options, { ...options, transposeOutOfRangeNotes: false })).toBe(true);
+        expect(shouldRefitSheet(options, { ...options, includePercussion: true })).toBe(true);
+        expect(shouldRefitSheet(options, { ...options, jigsawJoiners: true })).toBe(true);
+        expect(shouldRefitSheet(options, { ...options, loopMode: true })).toBe(true);
+    });
+
+    it('does not refit for options that do not change the size', () => {
+        expect(shouldRefitSheet(options, { ...options })).toBe(false);
+        expect(shouldRefitSheet(options, { ...options, mirrorVertically: true })).toBe(false);
+        expect(shouldRefitSheet(options, { ...options, stripOrientation: 'horizontal' })).toBe(false);
+        expect(shouldRefitSheet(options, { ...options, renderBorder: false })).toBe(false);
+        expect(shouldRefitSheet(options, { ...options, omitPageBoundaries: true })).toBe(false);
+        // An unset flag is the same as false.
+        expect(shouldRefitSheet(options, { ...options, includePercussion: false })).toBe(false);
+    });
+
+    it('keeps sizes typed in the same change', () => {
+        expect(shouldRefitSheet(options, { ...options, startPaddingMm: 15, pageWidthMm: 250 })).toBe(false);
+        expect(shouldRefitSheet(options, { ...options, jigsawJoiners: true, pageHeightMm: 200 })).toBe(false);
     });
 });

@@ -385,12 +385,11 @@ describe('fitSingleStrip', () => {
 
             Object.values(variants).forEach(format => {
                 const fitted = fitSingleStrip(midiFile, profile, format);
-                const unlimited = computeMusicBoxLayout(midiFile, profile, { ...format, renderBorder: true, pageWidthMm: 0, pageHeightMm: 0 });
+                const unlimited = computeMusicBoxLayout(midiFile, profile, { ...format, pageWidthMm: 0, pageHeightMm: 0 });
                 const layout = computeMusicBoxLayout(midiFile, profile, fitted);
 
-                expect(fitted).toEqual({
-                    ...format, renderBorder: true, pageWidthMm: fitted.pageWidthMm, pageHeightMm: profile.paperWidthMm,
-                });
+                // Only the sizes change: every other option (border included) is kept.
+                expect(fitted).toEqual({ ...format, pageWidthMm: fitted.pageWidthMm, pageHeightMm: profile.paperWidthMm });
                 expect(Number.isInteger(fitted.pageWidthMm)).toBe(true);
                 expect(fitted.pageWidthMm - unlimited.sheets[0].widthMm).toBeGreaterThanOrEqual(0);
                 expect(fitted.pageWidthMm - unlimited.sheets[0].widthMm).toBeLessThan(1 + JIGSAW_WIDTH_MM);
