@@ -1,8 +1,9 @@
 import MidiFile from '../model/MidiFile';
 import { IMusicBoxProfile } from '../model/IMusicBoxProfile';
-import { IMusicBoxSvgFormatOptions } from '../model/IMusicBoxSvgFormatOptions';
+import { IMusicBoxSvgFormatOptions, sheetDimensionNames } from '../model/IMusicBoxSvgFormatOptions';
 import { MidiNote } from '../model/MidiConstants';
 import { extractMusicBoxNotes, IMusicBoxNote, INoteExtractionResult, TrackSelection } from './MusicBoxNotes';
+import { drawSheet, ISheetDrawing } from './SheetDrawing';
 
 /** Length of the jigsaw joiner tab, in mm. */
 export const JIGSAW_WIDTH_MM = 2;
@@ -59,9 +60,17 @@ export interface IPlacedStrip {
     geometry: IStripGeometry;
 }
 
+/**
+ * A sheet in strip coordinates: x along the tape, strips stacked in rows. It is the same for both
+ * orientations; {@link drawSheet} turns it into what is cut.
+ */
 export interface ISheet {
+    /** Extent along the tape (the max strip length). */
     widthMm: number;
+    /** Extent across the stacked strips. */
     heightMm: number;
+    /** Width of the paper tape, shared by every strip of the sheet. */
+    stripWidthMm: number;
     strips: IPlacedStrip[];
 }
 
@@ -76,6 +85,8 @@ export interface IMusicBoxLayout {
     extraction: INoteExtractionResult;
     pages: IStripPage[];
     sheets: ISheet[];
+    /** The sheets as they are cut (with the configured orientation): what the DXF files contain. */
+    drawings: ISheetDrawing[];
     totalPaperLengthMm: number;
     messages: ILayoutMessage[];
 }
@@ -101,11 +112,12 @@ export function paginateNotes(
     // Space a hole needs on each side of its center before a cut.
     const holeMarginSeconds = holeRadiusSeconds + clearanceSeconds;
 
+    const sheetWidthName = sheetDimensionNames(format.stripOrientation).alongStrips;
     let pageLengthInSeconds = Infinity;
     if (format.pageWidthMm > 0) {
         const usableWidthMm = format.pageWidthMm - (format.jigsawJoiners ? JIGSAW_WIDTH_MM : 0);
         if (usableWidthMm <= 0) {
-            throw new Error('Sheet width is too small.');
+            throw new Error(`${sheetWidthName} is too small.`);
         }
         pageLengthInSeconds = usableWidthMm / mmPerSecond;
     }
@@ -126,7 +138,7 @@ export function paginateNotes(
         }
 
         if (lastFitting < first) {
-            throw new Error('Sheet width is too small to fit a single note.');
+            throw new Error(`${sheetWidthName} is too small to fit a single note.`);
         }
 
         if (lastFitting === notes.length - 1) {
@@ -310,7 +322,8 @@ export function buildSheets(
 
     if (stripsPerSheet < 1) {
         throw new Error(
-            `Sheet height must be at least ${profile.paperWidthMm.toFixed(2)} mm to fit one strip.`);
+            `${sheetDimensionNames(format.stripOrientation).acrossStrips} must be at least ` +
+            `${profile.paperWidthMm.toFixed(2)} mm to fit one strip.`);
     }
 
     const sheets: ISheet[] = [];
@@ -324,6 +337,7 @@ export function buildSheets(
             heightMm: format.pageHeightMm > 0
                 ? format.pageHeightMm
                 : sheetStrips.length * profile.paperWidthMm + (sheetStrips.length - 1) * STRIP_SPACING_MM,
+            stripWidthMm: profile.paperWidthMm,
             strips: placed,
         });
     }
@@ -347,6 +361,7 @@ export function computeMusicBoxLayout(
     const notePositions = getNoteLinePositions(profile);
     const strips = pages.map(page => buildStripGeometry(page, pages.length, profile, format, notePositions));
     const sheets = buildSheets(strips, profile, format);
+    const drawings = sheets.map(sheet => drawSheet(sheet, format.stripOrientation));
 
     const messages: ILayoutMessage[] = [];
     if (extraction.transposedCount > 0) {
@@ -374,7 +389,35 @@ export function computeMusicBoxLayout(
         extraction,
         pages,
         sheets,
+        drawings,
         totalPaperLengthMm: strips.reduce((total, strip) => total + strip.lengthMm, 0),
         messages,
+    };
+}
+
+/**
+ * Format options that put the whole song on a single strip, on a sheet of exactly its size (used
+ * when a MIDI file is loaded):
+ * - strip length: the song's length, rounded up to the next whole millimeter (plus the room that
+ *   pagination reserves for a jigsaw tab, if enabled);
+ * - sheet size across the strips: the paper width;
+ * - the border is drawn, so that the paper edges are cut.
+ * Every other option is kept.
+ */
+export function fitSingleStrip(
+    midiFile: MidiFile,
+    profile: IMusicBoxProfile,
+    format: IMusicBoxSvgFormatOptions,
+    trackSelection: TrackSelection = 'auto'
+): IMusicBoxSvgFormatOptions {
+    const fitted = { ...format, renderBorder: true };
+    // Without a size limit, the whole song is one strip.
+    const unlimited = computeMusicBoxLayout(midiFile, profile, { ...fitted, pageWidthMm: 0, pageHeightMm: 0 }, trackSelection);
+    const lengthMm = unlimited.totalPaperLengthMm + (format.jigsawJoiners ? JIGSAW_WIDTH_MM : 0);
+    return {
+        ...fitted,
+        // The tolerance keeps floating point noise (e.g. 201.0000000001) from adding a millimeter.
+        pageWidthMm: Math.ceil(lengthMm - 1e-9),
+        pageHeightMm: profile.paperWidthMm,
     };
 }

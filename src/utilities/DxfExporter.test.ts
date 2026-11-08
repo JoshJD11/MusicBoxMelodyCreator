@@ -1,31 +1,23 @@
 import { createDxf, formatDxfNumber } from './DxfExporter';
-import { ISheet } from './MusicBoxLayout';
+import { ISheetDrawing } from './SheetDrawing';
 
-const SHEET: ISheet = {
+const SHEET: ISheetDrawing = {
     widthMm: 250,
     heightMm: 200,
     strips: [
         {
-            offsetYMm: 0,
-            geometry: {
-                lengthMm: 100, extentMm: 100,
-                lines: [{ x1: 0, y1: 0, x2: 100, y2: 0 }],
-                circles: [{ cx: 11, cy: 5.925, r: 1 }],
-            },
+            lines: [{ x1: 0, y1: 0, x2: 100, y2: 0 }],
+            circles: [{ cx: 11, cy: 5.925, r: 1 }],
         },
         {
-            offsetYMm: 80.1,
-            geometry: {
-                lengthMm: 50, extentMm: 50,
-                lines: [{ x1: 0, y1: 70.1, x2: 50, y2: 70.1 }],
-                circles: [],
-            },
+            lines: [{ x1: 0, y1: 150.2, x2: 50, y2: 150.2 }],
+            circles: [],
         },
     ],
 };
 
 describe('createDxf', () => {
-    it('writes an R12 DXF in millimeters, flipped vertically', () => {
+    it('writes an R12 DXF in millimeters, flipped vertically, strip by strip', () => {
         expect(createDxf(SHEET).split('\r\n')).toEqual([
             '0', 'SECTION', '2', 'HEADER',
             '9', '$ACADVER', '1', 'AC1009',
@@ -36,7 +28,7 @@ describe('createDxf', () => {
             '0', 'SECTION', '2', 'ENTITIES',
             '0', 'LINE', '8', 'CUT', '10', '0', '20', '200', '30', '0', '11', '100', '21', '200', '31', '0',
             '0', 'CIRCLE', '8', 'HOLES', '10', '11', '20', '194.075', '30', '0', '40', '1',
-            // Second strip: 200 - (70.1 + 80.1) = 49.8
+            // Second strip: 200 - 150.2 = 49.8
             '0', 'LINE', '8', 'CUT', '10', '0', '20', '49.8', '30', '0', '11', '50', '21', '49.8', '31', '0',
             '0', 'ENDSEC',
             '0', 'EOF',

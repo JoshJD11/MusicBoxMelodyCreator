@@ -9,12 +9,17 @@ import {
   Checkbox,
   Callout,
   Intent,
+  Radio,
+  RadioGroup,
 } from "@blueprintjs/core";
 import {
   IMusicBoxSvgFormatOptions,
+  isStripOrientation,
+  StripOrientation,
   validateFormatOptions,
 } from "../model/IMusicBoxSvgFormatOptions";
 import { shallowEqual } from "../utilities/shallowEqual";
+import { rebaseEdits } from "../utilities/rebaseEdits";
 import { UnappliedChanges } from "./UnappliedChanges";
 
 export interface IMusicBoxSvgFormatEditorProps {
@@ -24,11 +29,49 @@ export interface IMusicBoxSvgFormatEditorProps {
   onDirtyChange?(dirty: boolean): void;
 }
 
+/** Texts that depend on the strip orientation (the fields keep their meaning in both). */
+const ORIENTATION_TEXTS: Record<
+  StripOrientation,
+  { stripLength: string; across: string; mirror: string; hints: string[] }
+> = {
+  horizontal: {
+    stripLength: "Max strip length / sheet width (mm)",
+    across: "Sheet height (mm)",
+    mirror: "Mirror strips (lowest note at the top)",
+    hints: [
+      "Strips are drawn horizontally, one per row: the song starts on the left and the highest note is at the top.",
+      "Set a size to 0 for no limit.",
+      "A4 landscape: 297 x 210 mm",
+      "Letter landscape: 279 x 216 mm",
+    ],
+  },
+  vertical: {
+    stripLength: "Max strip length / sheet height (mm)",
+    across: "Sheet width (mm)",
+    mirror: "Mirror strips (lowest note on the right)",
+    hints: [
+      "Strips are rotated 90° clockwise, one per column (the first one on the left): the song starts at the top and the highest note is on the right.",
+      "Set a size to 0 for no limit.",
+      "A4 portrait: strip length 297, sheet width 210 mm",
+      "Letter portrait: strip length 279, sheet width 216 mm",
+    ],
+  },
+};
+
 export function MusicBoxSvgFormatEditor(props: IMusicBoxSvgFormatEditorProps) {
   const [options, setOptions] = useState(props.options);
+  // When the applied options change from outside (e.g. the sizes fitted to a newly loaded MIDI
+  // file), the changed fields show their new values and the other unapplied edits are kept.
+  const [appliedOptions, setAppliedOptions] = useState(props.options);
+  if (appliedOptions !== props.options) {
+    setAppliedOptions(props.options);
+    setOptions(rebaseEdits(options, appliedOptions, props.options));
+  }
   const errors = validateFormatOptions(options);
   const dirty = !shallowEqual(options, props.options);
   const { onDirtyChange } = props;
+  const orientation = options.stripOrientation ?? "horizontal";
+  const texts = ORIENTATION_TEXTS[orientation];
 
   useEffect(() => {
     if (onDirtyChange) {
@@ -56,8 +99,22 @@ export function MusicBoxSvgFormatEditor(props: IMusicBoxSvgFormatEditorProps) {
       )}
       <div className={"mb-settingLayout"}>
         <div className={"mb-settingGroup"}>
+          <RadioGroup
+            label="Strip orientation"
+            inline={true}
+            selectedValue={orientation}
+            onChange={(event) => {
+              const value = event.currentTarget.value;
+              if (isStripOrientation(value)) {
+                setOptions({ ...options, stripOrientation: value });
+              }
+            }}
+          >
+            <Radio label="Horizontal (rows)" value="horizontal" />
+            <Radio label="Vertical (columns, rotated 90° clockwise)" value="vertical" />
+          </RadioGroup>
           <Label>
-            Max strip length / sheet width (mm)
+            {texts.stripLength}
             <NumericInput
               min={0}
               value={options.pageWidthMm}
@@ -67,7 +124,7 @@ export function MusicBoxSvgFormatEditor(props: IMusicBoxSvgFormatEditorProps) {
             />
           </Label>
           <Label>
-            Sheet height (mm)
+            {texts.across}
             <NumericInput
               min={0}
               value={options.pageHeightMm}
@@ -148,7 +205,7 @@ export function MusicBoxSvgFormatEditor(props: IMusicBoxSvgFormatEditorProps) {
           />
           <Checkbox
             checked={!!options.mirrorVertically}
-            label={"Mirror strips vertically (no need to flip in Silhouette)"}
+            label={texts.mirror}
             onChange={() => {
               setOptions({
                 ...options,
@@ -167,10 +224,9 @@ export function MusicBoxSvgFormatEditor(props: IMusicBoxSvgFormatEditorProps) {
             }}
           />
           <Callout>
-            <p>Strips are drawn horizontally, one per row.</p>
-            <p>Set a size to 0 for no limit.</p>
-            <p>A4 landscape: 297 x 210 mm</p>
-            <p>Letter landscape: 279 x 216 mm</p>
+            {texts.hints.map((hint) => (
+              <p key={hint}>{hint}</p>
+            ))}
           </Callout>
         </div>
       </div>

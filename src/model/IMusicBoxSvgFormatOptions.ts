@@ -1,16 +1,32 @@
+export const STRIP_ORIENTATIONS = ['horizontal', 'vertical'] as const;
+
+/**
+ * How the strips are laid out in the exported sheets:
+ * - `horizontal`: the song runs to the right, one strip per row, highest note at the top.
+ * - `vertical`: every strip is rotated 90° clockwise: the song runs downwards, one strip per column
+ *   (the first one on the left), highest note on the right. Ready to cut in Silhouette Studio without
+ *   rotating it by hand.
+ */
+export type StripOrientation = typeof STRIP_ORIENTATIONS[number];
+
+export function isStripOrientation(value: unknown): value is StripOrientation {
+  return (STRIP_ORIENTATIONS as readonly unknown[]).includes(value);
+}
+
 /**
  * Any non-functional formatting (e.g., styling, pagination, etc) to apply to the generate svg.
  */
 export interface IMusicBoxSvgFormatOptions {
   /**
-   * Max sheet width, used for breaking a horizontal strip into multiple pieces.
-   * Also bounds the melody length of a single strip.
+   * Max strip length: used for breaking the tape into multiple pieces. It is the sheet width with
+   * horizontal strips, and the sheet height with vertical ones.
    * Only non-zero values have any effect.
    */
   pageWidthMm: number;
 
   /**
-   * Max sheet height, used for placing horizontal strips in rows.
+   * Room for placing strips next to each other: the sheet height with horizontal strips (rows), and
+   * the sheet width with vertical ones (columns).
    */
   pageHeightMm: number;
 
@@ -38,10 +54,24 @@ export interface IMusicBoxSvgFormatOptions {
   loopMode: boolean;
 
   /**
-   * Mirror every strip vertically (top <-> bottom) within its own row, so that it doesn't
-   * have to be flipped in the cutting software.
+   * Mirror every strip across its width (highest <-> lowest note side) within its own row/column.
+   * Same result as flipping each strip in the cutting software (vertically if the strips are
+   * horizontal, horizontally if they are vertical).
    */
   mirrorVertically?: boolean;
+
+  /** Direction of the strips in the exported sheets. Horizontal when not set. */
+  stripOrientation?: StripOrientation;
+}
+
+/**
+ * User-facing names of the sheet dimensions that hold `pageWidthMm` (along the strips) and
+ * `pageHeightMm` (across them): they swap with the orientation.
+ */
+export function sheetDimensionNames(orientation: StripOrientation = 'horizontal') {
+  return orientation === 'vertical'
+    ? { alongStrips: 'Sheet height', acrossStrips: 'Sheet width' }
+    : { alongStrips: 'Sheet width', acrossStrips: 'Sheet height' };
 }
 
 /** Returns the problems that make the options unusable (empty if they are valid). */
@@ -53,8 +83,9 @@ export function validateFormatOptions(options: IMusicBoxSvgFormatOptions): strin
     }
   };
 
-  atLeastZero(options.pageWidthMm, "Sheet width");
-  atLeastZero(options.pageHeightMm, "Sheet height");
+  const names = sheetDimensionNames(options.stripOrientation);
+  atLeastZero(options.pageWidthMm, names.alongStrips);
+  atLeastZero(options.pageHeightMm, names.acrossStrips);
   atLeastZero(options.startPaddingMm, "Start padding");
 
   return errors;

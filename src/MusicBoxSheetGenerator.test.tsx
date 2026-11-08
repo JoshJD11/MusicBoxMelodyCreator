@@ -1,18 +1,33 @@
 import fs from 'fs';
 import path from 'path';
 import React from 'react';
-import { render, fireEvent, cleanup, within } from '@testing-library/react';
+import { render, fireEvent, cleanup, within, wait } from '@testing-library/react';
 import MusicBoxSheetGenerator from './MusicBoxSheetGenerator';
 import MidiFile from './model/MidiFile';
 import { BuiltInProfiles } from './model/IMusicBoxProfile';
-import { computeMusicBoxLayout } from './utilities/MusicBoxLayout';
+import { computeMusicBoxLayout, fitSingleStrip } from './utilities/MusicBoxLayout';
+import { IMusicBoxSvgFormatOptions } from './model/IMusicBoxSvgFormatOptions';
+import { buildMidi, endOfTrack, noteOff, noteOn } from './testUtils/midiBuilder';
 import { createDxf } from './utilities/DxfExporter';
 
 const SAMPLE = 'You are my sunshine.mid';
-const DEFAULT_FORMAT = {
+const DEFAULT_FORMAT: IMusicBoxSvgFormatOptions = {
     pageWidthMm: 250, pageHeightMm: 200, startPaddingMm: 10, renderBorder: true, omitPageBoundaries: false,
     transposeOutOfRangeNotes: true, includePercussion: false, jigsawJoiners: false, loopMode: false,
+    mirrorVertically: false, stripOrientation: 'vertical',
 };
+
+function loadSampleMidi(): MidiFile {
+    const midiFile = new MidiFile();
+    const bytes = sampleBytes();
+    midiFile.loadFromBuffer(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+    return midiFile;
+}
+
+/** The options the app uses right after loading the sample: sizes fitted to a single strip. */
+function fittedFormat(format: IMusicBoxSvgFormatOptions = DEFAULT_FORMAT): IMusicBoxSvgFormatOptions {
+    return fitSingleStrip(loadSampleMidi(), BuiltInProfiles['thirtyNote'], format);
+}
 
 function sampleBytes(): Uint8Array<ArrayBuffer> {
     // Copy into a plain ArrayBuffer (not shared with Node's Buffer pool).
@@ -69,19 +84,119 @@ describe('MusicBoxSheetGenerator (end to end)', () => {
         pickFile(container, new File([sampleBytes()], SAMPLE, { type: 'audio/midi' }));
         await findByText('MIDI ready');
 
-        // The preview shows one SVG per sheet.
-        const midiFile = new MidiFile();
-        const bytes = sampleBytes();
-        midiFile.loadFromBuffer(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
-        const layout = computeMusicBoxLayout(midiFile, BuiltInProfiles['thirtyNote'], DEFAULT_FORMAT);
-        const sheets = container.querySelectorAll('.mb-musicBoxSvgWrapper svg');
-        expect(sheets.length).toBe(layout.sheets.length);
+        // Vertical strips by default, on a sheet fitted to the whole song: one strip.
+        const format = fittedFormat();
+        const layout = computeMusicBoxLayout(loadSampleMidi(), BuiltInProfiles['thirtyNote'], format);
+        expect(layout.drawings.length).toBe(1);
+        expect(layout.drawings[0].strips.length).toBe(1);
+
+        // The preview shows one SVG per sheet, in a box that scrolls on its own.
+        const sheets = container.querySelectorAll('.mb-musicBoxSvgPages-limited .mb-musicBoxSvgWrapper svg');
+        expect(sheets.length).toBe(1);
+        expect(sheets[0].getAttribute('width')).toBe('70.1mm');
+        expect(sheets[0].getAttribute('height')).toBe(format.pageWidthMm + 'mm');
         expect(container.querySelectorAll('.mb-musicBoxSvgWrapper circle').length).toBe(layout.extraction.notes.length);
 
         fireEvent.click(getByText('Download DXF(s)'));
-        expect(createdBlobs.length).toBe(layout.sheets.length);
+        expect(createdBlobs.length).toBe(1);
         const downloaded = await Promise.all(createdBlobs.map(readBlob));
-        expect(downloaded).toEqual(layout.sheets.map(createDxf));
+        expect(downloaded).toEqual(layout.drawings.map(createDxf));
+        expect(downloaded[0].split('\r\n').slice(18, 24))
+            .toEqual(['9', '$EXTMAX', '10', '70.1', '20', String(format.pageWidthMm)]);
+    });
+
+    it('can switch to horizontal strips: downloads exactly the computed sheets', async () => {
+        const { container, findByText, getByText, getByRole, getByLabelText, queryByText } = render(<MusicBoxSheetGenerator />);
+        pickFile(container, new File([sampleBytes()], SAMPLE, { type: 'audio/midi' }));
+        await findByText('MIDI ready');
+
+        fireEvent.click(getByText('Layout/Pagination'));
+        const panel = () => within(getByRole('tabpanel'));
+        expect((getByLabelText(/Vertical/) as HTMLInputElement).checked).toBe(true);
+        expect(panel().getByText('Max strip length / sheet height (mm)')).toBeTruthy();
+        expect(panel().getByText('Sheet width (mm)')).toBeTruthy();
+        expect(panel().getByText(/lowest note on the right/)).toBeTruthy();
+
+        fireEvent.click(getByLabelText(/Horizontal/));
+        // Same fields, named as they are on a sheet with horizontal strips.
+        expect(panel().getByText('Max strip length / sheet width (mm)')).toBeTruthy();
+        expect(panel().getByText('Sheet height (mm)')).toBeTruthy();
+        expect(panel().getByText(/lowest note at the top/)).toBeTruthy();
+        expect(getByText(/Settings not applied yet: Layout\/Pagination/)).toBeTruthy();
+        fireEvent.click(panel().getAllByText('Apply')[0]);
+        expect(queryByText(/Settings not applied yet/)).toBeNull();
+
+        const format: IMusicBoxSvgFormatOptions = { ...fittedFormat(), stripOrientation: 'horizontal' };
+        const layout = computeMusicBoxLayout(loadSampleMidi(), BuiltInProfiles['thirtyNote'], format);
+
+        // Horizontal sheets: the preview is not limited in height.
+        expect(container.querySelector('.mb-musicBoxSvgPages-limited')).toBeNull();
+        const svgs = container.querySelectorAll('.mb-musicBoxSvgWrapper svg');
+        expect(svgs.length).toBe(1);
+        expect(svgs[0].getAttribute('width')).toBe(format.pageWidthMm + 'mm');
+        expect(svgs[0].getAttribute('height')).toBe('70.1mm');
+
+        createdBlobs.length = 0;
+        fireEvent.click(getByText('Download DXF(s)'));
+        const downloaded = await Promise.all(createdBlobs.map(readBlob));
+        expect(downloaded).toEqual(layout.drawings.map(createDxf));
+    });
+
+    it('fits the sizes to the song on every load, even of the same file, keeping other unapplied edits', async () => {
+        const { container, findByText, getByText, getByRole } = render(<MusicBoxSheetGenerator />);
+        fireEvent.click(getByText('Layout/Pagination'));
+        const panel = () => within(getByRole('tabpanel'));
+        const lengthInput = () => numericInput(panel().getByText(/Max strip length/));
+        const acrossInput = () => numericInput(panel().getByText(/Sheet width/));
+        const paddingInput = () => numericInput(panel().getByText(/Start padding/));
+        const load = async () => {
+            pickFile(container, new File([sampleBytes()], SAMPLE, { type: 'audio/midi' }));
+            await findByText('MIDI ready');
+        };
+        expect(lengthInput().value).toBe('250');
+
+        await load();
+        const fitted = fittedFormat();
+        expect(lengthInput().value).toBe(String(fitted.pageWidthMm));
+        expect(acrossInput().value).toBe('70.1');
+
+        // My own sizes are used until the next load...
+        fireEvent.change(lengthInput(), { target: { value: '190' } });
+        fireEvent.change(acrossInput(), { target: { value: '200' } });
+        fireEvent.click(panel().getAllByText('Apply')[0]);
+        expect(container.querySelectorAll('.mb-musicBoxSvgWrapper svg')[0].getAttribute('height')).toBe('190mm');
+
+        // ... which fits them again; an unapplied edit of another field is kept.
+        fireEvent.change(paddingInput(), { target: { value: '3' } });
+        await load();
+        expect(lengthInput().value).toBe(String(fitted.pageWidthMm));
+        expect(acrossInput().value).toBe('70.1');
+        expect(paddingInput().value).toBe('3');
+        expect(panel().getByText('Changes not applied yet')).toBeTruthy();
+        expect(container.querySelectorAll('.mb-musicBoxSvgWrapper svg').length).toBe(1);
+    });
+
+    it('keeps the sizes when a song has no playable notes, and fits them again for the next song', async () => {
+        const { container, findByText, getByText, getByRole } = render(<MusicBoxSheetGenerator />);
+        fireEvent.click(getByText('Layout/Pagination'));
+        const lengthInput = () => numericInput(within(getByRole('tabpanel')).getByText(/Max strip length/));
+        const download = () => getByText('Download DXF(s)').closest('button') as HTMLButtonElement;
+
+        // Only drums (MIDI channel 10): nothing to punch.
+        const drums = buildMidi({ ppqn: 480, tracks: [[noteOn(0, 36, 100, 9), noteOff(480, 36, 9), endOfTrack()]] });
+        pickFile(container, new File([drums], 'drums.mid', { type: 'audio/midi' }));
+        await findByText('MIDI ready');
+        expect(getByText('No supported MIDI notes!')).toBeTruthy();
+        expect(download().disabled).toBe(true);
+        expect(lengthInput().value).toBe('250');
+        expect(container.querySelector('.mb-musicBoxSvgWrapper')).toBeNull();
+
+        pickFile(container, new File([sampleBytes()], SAMPLE, { type: 'audio/midi' }));
+        // The file name shows in the picker before the file is read: wait for the preview.
+        await wait(() => expect(container.querySelector('.mb-musicBoxSvgWrapper')).not.toBeNull());
+        expect(lengthInput().value).toBe(String(fittedFormat().pageWidthMm));
+        expect(download().disabled).toBe(false);
+        expect(container.querySelectorAll('.mb-musicBoxSvgWrapper svg').length).toBe(1);
     });
 
     it('shows a readable error for a file that is not MIDI', async () => {
@@ -92,12 +207,12 @@ describe('MusicBoxSheetGenerator (end to end)', () => {
         expect(getByText('No MIDI loaded')).toBeTruthy();
     });
 
-    it('keeps unapplied settings when switching tabs, and only mounts the 3D view while open', () => {
-        const { container, getByText, getByLabelText } = render(<MusicBoxSheetGenerator />);
+    it('keeps unapplied settings when switching tabs', () => {
+        const { getByText, getByLabelText } = render(<MusicBoxSheetGenerator />);
         const tab = (name: string) => fireEvent.click(getByText(name));
 
         tab('Layout/Pagination');
-        const mirror = getByLabelText(/Mirror strips vertically/) as HTMLInputElement;
+        const mirror = getByLabelText(/Mirror strips/) as HTMLInputElement;
         expect(mirror.checked).toBe(false);
         fireEvent.click(mirror);
         expect(mirror.checked).toBe(true);
@@ -105,14 +220,7 @@ describe('MusicBoxSheetGenerator (end to end)', () => {
         tab('MIDI File');
         tab('Paper/Music Box Settings');
         tab('Layout/Pagination');
-        expect((getByLabelText(/Mirror strips vertically/) as HTMLInputElement).checked).toBe(true);
-
-        // The experimental 3D view (WebGL) is not mounted while its tab is closed.
-        expect(container.textContent).not.toContain('Load a MIDI file to generate layout');
-        tab('3D Fischer Price (experimental)');
-        expect(container.textContent).toContain('Load a MIDI file to generate layout');
-        tab('MIDI File');
-        expect(container.textContent).not.toContain('Load a MIDI file to generate layout');
+        expect((getByLabelText(/Mirror strips/) as HTMLInputElement).checked).toBe(true);
     });
 
     it('warns about unapplied changes, and only uses applied values for the DXF', async () => {
@@ -123,7 +231,9 @@ describe('MusicBoxSheetGenerator (end to end)', () => {
         fireEvent.click(getByText('Layout/Pagination'));
         const panel = () => within(getByRole('tabpanel'));
         const widthInput = () => numericInput(panel().getByText(/Max strip length/));
-        const extMaxWidth = (dxf: string) => dxf.split('\r\n')[21]; // value after "$EXTMAX", "10"
+        // Vertical strips: the strip length is the sheet height (value after "$EXTMAX", "10", x, "20").
+        const extMaxHeight = (dxf: string) => dxf.split('\r\n')[23];
+        const fittedLength = String(fittedFormat().pageWidthMm);
         const downloadFirst = async () => {
             createdBlobs.length = 0;
             fireEvent.click(getByText('Download DXF(s)'));
@@ -133,18 +243,18 @@ describe('MusicBoxSheetGenerator (end to end)', () => {
         fireEvent.change(widthInput(), { target: { value: '190' } });
         expect(panel().getByText('Changes not applied yet')).toBeTruthy();
         expect(getByText(/Settings not applied yet: Layout\/Pagination/)).toBeTruthy();
-        // Not applied: the DXF still uses the applied 250 mm.
-        expect(extMaxWidth(await downloadFirst())).toBe('250');
+        // Not applied: the DXF still uses the applied length (fitted to the song when it was loaded).
+        expect(extMaxHeight(await downloadFirst())).toBe(fittedLength);
 
         fireEvent.click(panel().getByText('Discard'));
-        expect(widthInput().value).toBe('250');
+        expect(widthInput().value).toBe(fittedLength);
         expect(queryByText('Changes not applied yet')).toBeNull();
         expect(queryByText(/Settings not applied yet/)).toBeNull();
 
         fireEvent.change(widthInput(), { target: { value: '190' } });
         fireEvent.click(panel().getAllByText('Apply')[0]);
         expect(queryByText(/Settings not applied yet/)).toBeNull();
-        expect(extMaxWidth(await downloadFirst())).toBe('190');
+        expect(extMaxHeight(await downloadFirst())).toBe('190');
     });
 
     it('disables the download while the settings make the strips impossible', async () => {
@@ -156,12 +266,13 @@ describe('MusicBoxSheetGenerator (end to end)', () => {
 
         fireEvent.click(getByText('Layout/Pagination'));
         const panel = within(getByRole('tabpanel'));
-        fireEvent.change(numericInput(panel.getByText(/Sheet height/)), { target: { value: '50' } }); // < 70.1 mm strip
+        // Vertical strips are side by side: the sheet width must fit one 70.1 mm strip.
+        fireEvent.change(numericInput(panel.getByText(/Sheet width/)), { target: { value: '50' } });
         fireEvent.click(panel.getAllByText('Apply')[0]);
         expect(download().disabled).toBe(true);
-        expect(download().title).toMatch(/Sheet height must be at least 70.10 mm/);
+        expect(download().title).toMatch(/Sheet width must be at least 70.10 mm/);
 
-        fireEvent.change(numericInput(within(getByRole('tabpanel')).getByText(/Sheet height/)), { target: { value: '200' } });
+        fireEvent.change(numericInput(within(getByRole('tabpanel')).getByText(/Sheet width/)), { target: { value: '200' } });
         fireEvent.click(within(getByRole('tabpanel')).getAllByText('Apply')[0]);
         expect(download().disabled).toBe(false);
     });

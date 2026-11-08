@@ -15,9 +15,21 @@ export interface IStripFiles {
 export interface IDxfPreviewProps {
   files: IStripFiles;
   paperWidthMm: number;
+  /**
+   * Limits the height of the preview, which then scrolls on its own (long vertical strips would
+   * otherwise make the page very long).
+   */
+  limitHeight?: boolean;
 }
 
 const STROKE_WIDTH_MM = 0.25;
+
+/**
+ * Faint dashed outline of the sheet. It is not part of the DXF: it only shows on screen where the
+ * strips are on the sheet (as in Silhouette Studio), so that a centered sheet looks centered.
+ */
+const SHEET_OUTLINE_COLOR = "#c8c8b8";
+const SHEET_OUTLINE_DASH = "2 1.5";
 
 /**
  * Preview of the strips, drawn from the DXF documents themselves: what is shown is exactly the
@@ -53,7 +65,13 @@ export default class DxfPreview extends React.Component<IDxfPreviewProps> {
             width: {this.props.paperWidthMm} mm
           </p>
         </Callout>
-        <div className="mb-musicBoxSvgPages">
+        <div
+          className={
+            this.props.limitHeight
+              ? "mb-musicBoxSvgPages mb-musicBoxSvgPages-limited"
+              : "mb-musicBoxSvgPages"
+          }
+        >
           {drawings.map((drawing, index) => (
             <div className="mb-musicBoxSvgWrapper" key={index}>
               {drawing instanceof Error ? (
@@ -86,7 +104,7 @@ export default class DxfPreview extends React.Component<IDxfPreviewProps> {
   }
 }
 
-/** Draws one DXF sheet, in millimeters. */
+/** Draws one DXF sheet, in millimeters, on its (screen only) sheet outline. */
 export function DxfDrawingSvg(props: { drawing: IDxfDrawing }) {
   const { drawing } = props;
   const w = drawing.widthMm;
@@ -99,6 +117,17 @@ export function DxfDrawingSvg(props: { drawing: IDxfDrawing }) {
       viewBox={`0 0 ${w} ${h}`}
       xmlns={"http://www.w3.org/2000/svg"}
     >
+      <rect
+        className="mb-sheetOutline"
+        x={0}
+        y={0}
+        width={w}
+        height={h}
+        fill="none"
+        stroke={SHEET_OUTLINE_COLOR}
+        strokeWidth={STROKE_WIDTH_MM}
+        strokeDasharray={SHEET_OUTLINE_DASH}
+      />
       <g>
         {drawing.lines.map((line, i) => (
           <line

@@ -1,4 +1,4 @@
-import { ISheet } from './MusicBoxLayout';
+import { ISheetDrawing } from './SheetDrawing';
 
 /** Layer of the strip borders (cut lines). */
 export const DXF_CUT_LAYER = 'CUT';
@@ -8,37 +8,36 @@ export const DXF_HOLES_LAYER = 'HOLES';
 
 /**
  * Creates an ASCII DXF (AutoCAD R12) document with the borders (LINE entities, layer CUT) and
- * holes (CIRCLE entities, layer HOLES) of a sheet, in millimeters.
+ * holes (CIRCLE entities, layer HOLES) of a sheet, in millimeters. Strip by strip: its borders,
+ * then its holes.
  *
- * DXF uses a y axis pointing up, so the sheet is flipped vertically around its height: the
- * result looks exactly like the SVG preview.
+ * DXF uses a y axis pointing up, so the drawing is flipped vertically around the sheet height: the
+ * file looks exactly like the drawing (and like the preview).
  */
-export function createDxf(sheet: ISheet): string {
+export function createDxf(sheet: ISheetDrawing): string {
     const heightMm = sheet.heightMm;
     const entities: string[] = [];
 
     sheet.strips.forEach(strip => {
-        const offsetY = strip.offsetYMm;
-
-        strip.geometry.lines.forEach(line => {
+        strip.lines.forEach(line => {
             entities.push(
                 '0', 'LINE',
                 '8', DXF_CUT_LAYER,
                 '10', formatDxfNumber(line.x1),
-                '20', formatDxfNumber(heightMm - (line.y1 + offsetY)),
+                '20', formatDxfNumber(heightMm - line.y1),
                 '30', '0',
                 '11', formatDxfNumber(line.x2),
-                '21', formatDxfNumber(heightMm - (line.y2 + offsetY)),
+                '21', formatDxfNumber(heightMm - line.y2),
                 '31', '0'
             );
         });
 
-        strip.geometry.circles.forEach(circle => {
+        strip.circles.forEach(circle => {
             entities.push(
                 '0', 'CIRCLE',
                 '8', DXF_HOLES_LAYER,
                 '10', formatDxfNumber(circle.cx),
-                '20', formatDxfNumber(heightMm - (circle.cy + offsetY)),
+                '20', formatDxfNumber(heightMm - circle.cy),
                 '30', '0',
                 '40', formatDxfNumber(circle.r)
             );

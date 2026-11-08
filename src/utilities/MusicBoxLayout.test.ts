@@ -5,7 +5,7 @@ import { BuiltInProfiles, IMusicBoxProfile } from '../model/IMusicBoxProfile';
 import { IMusicBoxSvgFormatOptions } from '../model/IMusicBoxSvgFormatOptions';
 import {
     buildSheets, buildStripGeometry, computeMusicBoxLayout, CUT_CLEARANCE_MM, getNoteLinePositions, IMusicBoxLayout,
-    JIGSAW_WIDTH_MM, paginateNotes, STRIP_SPACING_MM,
+    fitSingleStrip, JIGSAW_WIDTH_MM, paginateNotes, STRIP_SPACING_MM,
 } from './MusicBoxLayout';
 import { IMusicBoxNote } from './MusicBoxNotes';
 
@@ -32,6 +32,11 @@ const FORMAT_VARIANTS: { [name: string]: IMusicBoxSvgFormatOptions } = {
     smallPadding: { ...FORMAT, startPaddingMm: 3 },
     mirrored: { ...FORMAT, mirrorVertically: true },
     mirroredJigsawLoop: { ...FORMAT, mirrorVertically: true, jigsawJoiners: true, loopMode: true },
+    vertical: { ...FORMAT, stripOrientation: 'vertical' },
+    verticalJigsawLoop: { ...FORMAT, stripOrientation: 'vertical', jigsawJoiners: true, loopMode: true },
+    verticalUnlimited: { ...FORMAT, stripOrientation: 'vertical', pageWidthMm: 0, pageHeightMm: 0 },
+    vertical277x190: { ...FORMAT, stripOrientation: 'vertical', pageWidthMm: 277, pageHeightMm: 190 },
+    verticalMirrored: { ...FORMAT, stripOrientation: 'vertical', mirrorVertically: true },
 };
 
 const SAMPLES = [
@@ -101,6 +106,17 @@ function expectPhysicallyValid(layout: IMusicBoxLayout, profile: IMusicBoxProfil
     });
 
     expect(Math.abs(layout.totalPaperLengthMm - stripStartMm)).toBeLessThan(1e-6);
+
+    // What is cut (with the configured orientation) stays inside the sheet, jigsaw tabs included.
+    expect(layout.drawings.length).toBe(layout.sheets.length);
+    layout.drawings.forEach(drawing => drawing.strips.forEach(strip => {
+        const xs = [...strip.lines.flatMap(l => [l.x1, l.x2]), ...strip.circles.flatMap(c => [c.cx - c.r, c.cx + c.r])];
+        const ys = [...strip.lines.flatMap(l => [l.y1, l.y2]), ...strip.circles.flatMap(c => [c.cy - c.r, c.cy + c.r])];
+        expect(Math.min(...xs)).toBeGreaterThanOrEqual(-EPSILON);
+        expect(Math.max(...xs)).toBeLessThanOrEqual(drawing.widthMm + EPSILON);
+        expect(Math.min(...ys)).toBeGreaterThanOrEqual(-EPSILON);
+        expect(Math.max(...ys)).toBeLessThanOrEqual(drawing.heightMm + EPSILON);
+    }));
 }
 
 describe('layout of the sample songs', () => {
@@ -129,7 +145,8 @@ describe('layout of the sample songs', () => {
 });
 
 describe('paginateNotes', () => {
-    const profile = BuiltInProfiles['thirtyNote']; // 20 mm/s, 2 mm holes
+    // The arithmetic below assumes 2 mm holes (independent of the default hole size).
+    const profile: IMusicBoxProfile = { ...BuiltInProfiles['thirtyNote'], holeDiameterMm: 2 }; // 20 mm/s
     const format: IMusicBoxSvgFormatOptions = { ...FORMAT, pageWidthMm: 100, startPaddingMm: 10 };
     // First page starts at -(10 + 1) / 20 s = -0.55 s and can hold 100 mm = 5 s, i.e. until 4.45 s.
 
@@ -213,7 +230,11 @@ describe('buildSheets', () => {
 
     it('rejects sheets lower than one strip', () => {
         expect(() => buildSheets(stripsOf(1), BuiltInProfiles['thirtyNote'], { ...FORMAT, pageHeightMm: 70 }))
-            .toThrow(/at least 70.10 mm/);
+            .toThrow(/^Sheet height must be at least 70.10 mm/);
+        // With vertical strips, they are placed side by side: it's the sheet width.
+        expect(() => buildSheets(stripsOf(1), BuiltInProfiles['thirtyNote'],
+            { ...FORMAT, pageHeightMm: 70, stripOrientation: 'vertical' }))
+            .toThrow(/^Sheet width must be at least 70.10 mm/);
     });
 
     it('sizes unlimited sheets to their content', () => {
@@ -285,5 +306,71 @@ describe('vertical mirror', () => {
         const profile = BuiltInProfiles['fifteenNote'];
         expect(computeMusicBoxLayout(midiFile, profile, { ...FORMAT, mirrorVertically: false }))
             .toEqual(computeMusicBoxLayout(midiFile, profile, FORMAT));
+    });
+});
+
+describe('strip orientation', () => {
+    it('is horizontal by default', () => {
+        const midiFile = loadSample(SAMPLES[2]);
+        const profile = BuiltInProfiles['thirtyNote'];
+        expect(computeMusicBoxLayout(midiFile, profile, { ...FORMAT, stripOrientation: 'horizontal' }))
+            .toEqual(computeMusicBoxLayout(midiFile, profile, FORMAT));
+    });
+
+    it('only changes the drawings: pages, strips and sheets in strip coordinates stay the same', () => {
+        const midiFile = loadSample(SAMPLES[1]);
+        const profile = BuiltInProfiles['fifteenNote'];
+        const horizontal = computeMusicBoxLayout(midiFile, profile, FORMAT);
+        const vertical = computeMusicBoxLayout(midiFile, profile, { ...FORMAT, stripOrientation: 'vertical' });
+        expect(vertical.pages).toEqual(horizontal.pages);
+        expect(vertical.sheets).toEqual(horizontal.sheets);
+        expect(vertical.totalPaperLengthMm).toBe(horizontal.totalPaperLengthMm);
+        expect(vertical.drawings.map(d => [d.widthMm, d.heightMm]))
+            .toEqual(horizontal.drawings.map(d => [d.heightMm, d.widthMm]));
+    });
+});
+
+describe('fitSingleStrip', () => {
+    const variants: { [name: string]: IMusicBoxSvgFormatOptions } = {
+        ...FORMAT_VARIANTS,
+        noBorder: { ...FORMAT, renderBorder: false },
+        jigsawOnly: { ...FORMAT, jigsawJoiners: true },
+        verticalJigsaw: { ...FORMAT, stripOrientation: 'vertical', jigsawJoiners: true },
+    };
+
+    SAMPLES.forEach(sample => Object.keys(BuiltInProfiles).forEach(profileKey => {
+        it(`${sample} / ${profileKey}: puts the whole song on one strip, on a sheet of its size`, () => {
+            const profile = BuiltInProfiles[profileKey];
+            const midiFile = loadSample(sample);
+
+            Object.values(variants).forEach(format => {
+                const fitted = fitSingleStrip(midiFile, profile, format);
+                const unlimited = computeMusicBoxLayout(midiFile, profile, { ...format, renderBorder: true, pageWidthMm: 0, pageHeightMm: 0 });
+                const layout = computeMusicBoxLayout(midiFile, profile, fitted);
+
+                expect(fitted).toEqual({
+                    ...format, renderBorder: true, pageWidthMm: fitted.pageWidthMm, pageHeightMm: profile.paperWidthMm,
+                });
+                expect(Number.isInteger(fitted.pageWidthMm)).toBe(true);
+                expect(fitted.pageWidthMm - unlimited.sheets[0].widthMm).toBeGreaterThanOrEqual(0);
+                expect(fitted.pageWidthMm - unlimited.sheets[0].widthMm).toBeLessThan(1 + JIGSAW_WIDTH_MM);
+
+                // One strip on one sheet, with the same holes as without any size limit.
+                expect(layout.pages.length).toBe(1);
+                expect(layout.sheets.length).toBe(1);
+                expect(layout.pages).toEqual(unlimited.pages);
+                expect(layout.sheets[0].strips[0].geometry.circles).toEqual(unlimited.sheets[0].strips[0].geometry.circles);
+                expectPhysicallyValid(layout, profile, fitted);
+            });
+        });
+    }));
+
+    it('rounds the length up to the next whole millimeter and uses the paper width', () => {
+        const profile = BuiltInProfiles['thirtyNote']; // 20 mm/s, 2.2 mm holes
+        const midiFile = loadSample('happy_birthday.mid');
+        const unlimited = computeMusicBoxLayout(midiFile, profile, { ...FORMAT, pageWidthMm: 0, pageHeightMm: 0 });
+        const fitted = fitSingleStrip(midiFile, profile, FORMAT);
+        expect(fitted.pageWidthMm).toBe(Math.ceil(unlimited.totalPaperLengthMm));
+        expect(fitted.pageHeightMm).toBe(70.1);
     });
 });

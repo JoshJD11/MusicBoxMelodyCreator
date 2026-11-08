@@ -4,8 +4,29 @@
     overflow: auto;
 }
 
+/*
+ * Every sheet is centered in the preview. A sheet wider than the preview starts at its left edge
+ * instead (auto margins become 0), so that it can be scrolled from start to end.
+ */
 .mb-musicBoxSvgWrapper {
     padding: 16px;
     box-sizing: border-box;
-    max-width: 100%;
+    width: fit-content;
+    margin: 0 auto;
+}
+
+/*
+ * Lines on the edge of the sheet (e.g. the paper border when the sheet is exactly the size of the
+ * strip) are centered on it: don't clip the outer half of their stroke. Only the display changes.
+ */
+.mb-musicBoxSvgWrapper svg {
+    overflow: visible;
+}
+
+/* Long vertical strips: the page stays short and the preview scrolls on its own. */
+.mb-musicBoxSvgPages-limited {
+    max-height: 75vh;
+    overflow-y: auto;
+    border: 1px solid var(--mb-line, #d8d8c9);
+    border-radius: 4px;
 }

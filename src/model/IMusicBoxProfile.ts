@@ -47,7 +47,7 @@ export const BuiltInProfiles: { [key: string]: IMusicBoxProfile } = {
             MidiNote.B4, MidiNote.C5, MidiNote.D5, MidiNote.E5, MidiNote.F5, MidiNote.G5,
             MidiNote.A5, MidiNote.B5, MidiNote.C6
         ],
-        holeDiameterMm: 1.8,
+        holeDiameterMm: 2.0,
         millimetersPerSecond: 20,
         minNoteGapMm: 3
     },
@@ -63,7 +63,7 @@ export const BuiltInProfiles: { [key: string]: IMusicBoxProfile } = {
             MidiNote.Ds5, MidiNote.E5, MidiNote.F5, MidiNote.Fs5, MidiNote.G5, MidiNote.Gs5,
             MidiNote.A5, MidiNote.As5, MidiNote.B5, MidiNote.C6, MidiNote.D6, MidiNote.E6
         ],
-        holeDiameterMm: 2,
+        holeDiameterMm: 2.2,
         millimetersPerSecond: 20,
         minNoteGapMm: 3
     }

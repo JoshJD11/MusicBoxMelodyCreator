@@ -1,15 +1,12 @@
-import React, { Suspense } from "react";
+import React from "react";
 import "./MusicBoxSheetGenerator.css";
 import {
   Button,
   ButtonGroup,
   Callout,
-  Card,
   Intent,
   Collapse,
-  NonIdealState,
   Pre,
-  Spinner,
   Tab,
   Tabs,
 } from "@blueprintjs/core";
@@ -23,12 +20,9 @@ import { BuiltInProfiles, IMusicBoxProfile } from "./model/IMusicBoxProfile";
 import MidiJsonConverter from "./utilities/MidiJsonConverter";
 import { buildGeneratedMusicBoxSequence } from "./utilities/MusicBoxMidi";
 import { TrackSelection } from "./utilities/MusicBoxNotes";
-import { computeMusicBoxLayout } from "./utilities/MusicBoxLayout";
+import { computeMusicBoxLayout, fitSingleStrip } from "./utilities/MusicBoxLayout";
 import { createDxf } from "./utilities/DxfExporter";
 import PianoPlayer, { PlaybackState } from "./utilities/PianoPlayer";
-
-// three.js is large: the experimental 3D view is only downloaded when its tab is opened.
-const FischerPrice3DModel = React.lazy(() => import("./components/FischerPrice3DModel"));
 
 const CREDITS = [
   {
@@ -48,6 +42,7 @@ const DEFAULT_FORMAT_OPTIONS: IMusicBoxSvgFormatOptions = {
   jigsawJoiners: false,
   loopMode: false,
   mirrorVertically: false,
+  stripOrientation: "vertical",
 };
 
 interface IAppState {
@@ -65,7 +60,7 @@ interface IAppState {
   unappliedLayout: boolean;
 }
 
-type SettingsTab = "file-picker-tab" | "paper-settings-tab" | "format-settings-tab" | "3d-printing-tab";
+type SettingsTab = "file-picker-tab" | "paper-settings-tab" | "format-settings-tab";
 
 type AppProps = Record<string, never>;
 
@@ -122,7 +117,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
     let result: IStripFiles;
     try {
       const layout = computeMusicBoxLayout(midiFile, musicBoxProfile, musicBoxSvgFormatOptions, trackSelection);
-      result = { layout, dxfs: layout.sheets.map(createDxf) };
+      result = { layout, dxfs: layout.drawings.map(createDxf) };
     } catch (error) {
       result = { error: error instanceof Error ? error.message : String(error) };
     }
@@ -191,35 +186,6 @@ export default class MusicBoxSheetGenerator extends React.Component<
       </div>
     );
 
-    let fischerPriceSettings: JSX.Element | null;
-    if (this.state.selectedTab !== "3d-printing-tab") {
-      // The settings panels stay mounted (so that unapplied edits survive a tab switch), but the
-      // 3D view only exists while its tab is open: it keeps WebGL and an animation loop running.
-      fischerPriceSettings = null;
-    } else if (!this.state.midiFile) {
-      fischerPriceSettings = (
-        <div className="mb-settingsTab-container mb-settingsArea">
-          <Card>
-            <NonIdealState
-              icon={"error"}
-              title="No file loaded"
-              description={"Load a MIDI file to generate layout"}
-              action={undefined}
-            />
-          </Card>
-        </div>
-      );
-    } else {
-      fischerPriceSettings = (
-        <Suspense fallback={<Spinner />}>
-          <FischerPrice3DModel
-            midiFile={this.state.midiFile}
-            musicBoxProfile={this.state.musicBoxProfile}
-          />
-        </Suspense>
-      );
-    }
-
     const isPlaying = this.state.playbackState === "playing";
     const layout = this.getLayout();
     const layoutError = layout ? layout.error : undefined;
@@ -251,6 +217,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
               key={"settings-tabs"}
               selectedTabId={this.state.selectedTab}
               onChange={(tabId) => this.setState({ selectedTab: tabId as SettingsTab })}
+              // Every settings panel stays mounted (hidden), so that unapplied edits survive a tab switch.
               renderActiveTabPanelOnly={false}
             >
               <Tab id="file-picker-tab" title="MIDI File" panel={filePicker} />
@@ -263,11 +230,6 @@ export default class MusicBoxSheetGenerator extends React.Component<
                 id="format-settings-tab"
                 title="Layout/Pagination"
                 panel={formatSettings}
-              />
-              <Tab
-                id="3d-printing-tab"
-                title="3D Fischer Price (experimental)"
-                panel={fischerPriceSettings ?? undefined}
               />
             </Tabs>
           </aside>
@@ -323,6 +285,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
                   <DxfPreview
                     files={layout}
                     paperWidthMm={this.state.musicBoxProfile.paperWidthMm}
+                    limitHeight={this.state.musicBoxSvgFormatOptions.stripOrientation === "vertical"}
                   />
                 )}
               </div>
@@ -371,12 +334,14 @@ export default class MusicBoxSheetGenerator extends React.Component<
 
   private onMidiDataLoaded(fileName: string, midiFile: MidiFile) {
     this.player.stop();
-    this.setState({
+    this.setState((state) => ({
       midiFile,
       fileName,
       midiJson: MidiJsonConverter.GetJson(midiFile),
       trackSelection: "auto",
-    });
+      // Every load (even of the same file) fits the sheet to the whole song on a single strip.
+      musicBoxSvgFormatOptions: fitFormatToSong(midiFile, state.musicBoxProfile, state.musicBoxSvgFormatOptions),
+    }));
   }
 
   private downloadDxfs() {
@@ -446,6 +411,22 @@ export default class MusicBoxSheetGenerator extends React.Component<
 
   private toggleDebugMessage(): void {
     this.setState((state) => ({ showMidiJson: !state.showMidiJson }));
+  }
+}
+
+/**
+ * Sizes that fit the whole song on one strip. If the song can't be laid out (e.g. it has no
+ * playable notes), the options are kept and the preview shows the error.
+ */
+function fitFormatToSong(
+  midiFile: MidiFile,
+  profile: IMusicBoxProfile,
+  format: IMusicBoxSvgFormatOptions
+): IMusicBoxSvgFormatOptions {
+  try {
+    return fitSingleStrip(midiFile, profile, format, "auto");
+  } catch {
+    return format;
   }
 }
 

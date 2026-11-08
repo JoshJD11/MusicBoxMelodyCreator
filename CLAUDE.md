@@ -55,7 +55,8 @@ archivo .mid
          │                            del agujero anterior en la misma línea
          ├─ utilities/MusicBoxMidi.ts → PianoPlayer.ts (Web Audio): vista previa sonora
          └─ utilities/MusicBoxLayout.ts  paginateNotes → buildStripGeometry → buildSheets (mm, y hacia abajo)
-             └─ utilities/DxfExporter.ts     DXF R12 por hoja (y invertida)
+             └─ utilities/SheetDrawing.ts    drawSheet: hoja con la orientación elegida (horizontal / vertical)
+                 └─ utilities/DxfExporter.ts DXF R12 por hoja (y invertida)
                  ├─ descarga: esos mismos textos DXF
                  └─ utilities/DxfReader.ts → components/DxfPreview.tsx  vista previa dibujada
                                               leyendo el DXF (un <svg> por hoja)
@@ -78,19 +79,44 @@ archivo .mid
 - **Líneas de nota**: la nota más aguda queda arriba, a `(anchoPapel − anchoContenido) / 2` del borde
   superior.
 - **Espejo vertical** (`mirrorVertically`, desactivado por defecto): refleja cada tira dentro de su
-  propia franja (`y → anchoPapel − y`) para no tener que voltearla en Silhouette. Se aplica a la
+  propia franja (`y → anchoPapel − y`): equivale a voltear cada tira en Silhouette. La etiqueta describe
+  el resultado ("lowest note at the top" / "on the right"), no si hace falta voltear. Se aplica a la
   geometría, así que la vista previa y el DXF coinciden.
+- **Orientación** (`stripOrientation`; la app arranca en **vertical**, preferencia del usuario; sin
+  valor, las funciones puras usan horizontal): `buildSheets` trabaja siempre en
+  coordenadas de cinta (x a lo largo, tiras en filas); `drawSheet` produce lo que se corta
+  (`layout.drawings`). En horizontal solo baja cada tira a su fila (DXF idéntico byte a byte al de antes).
+  En vertical gira cada tira 90° en sentido horario y la pone en su columna, de izquierda a derecha en
+  orden: `(x, y) → (columna + anchoPapel − y, x)`. La canción empieza arriba y la nota más aguda queda a
+  la derecha (con espejo, a la izquierda). Los campos de tamaño conservan su significado (decisión del
+  usuario): `pageWidthMm` es el largo máximo de la tira (alto de la hoja en vertical) y `pageHeightMm` el
+  espacio para colocarlas lado a lado (ancho en vertical); el DXF intercambia ancho y alto. Las etiquetas y
+  los errores usan `sheetDimensionNames`.
+- **Auto-tamaño al cargar un MIDI** (`fitSingleStrip`): cada carga (incluso del mismo archivo)
+  pone largo = largo de la canción redondeado hacia arriba al mm (+2 mm si hay juntas puzzle), ancho =
+  ancho del papel y borde activado: una sola tira en una hoja de su tamaño. Después el usuario puede
+  cambiar los tamaños a mano; no se recalcula hasta la siguiente carga. El editor de Layout incorpora
+  esos cambios externos con `rebaseEdits` (los campos cambiados desde fuera toman el valor nuevo y se
+  conservan los demás cambios sin aplicar).
+- **Agujeros**: 2.0 mm (15 notas) y 2.2 mm (30 notas), 0.2 mm más que el proyecto original (decisión
+  del usuario). Los tests con cuentas a mano usan un perfil de prueba con agujeros de 2 mm.
+- **Vista previa**: en vertical, el cuadro de las hojas mide como mucho el 75% del alto de la ventana y
+  tiene scroll propio, para llegar rápido al final de la página. En horizontal no hay límite. El `<svg>`
+  no recorta el trazo de las líneas que caen en el borde de la hoja (solo afecta a la pantalla). Cada hoja
+  se centra en el cuadro (las más anchas empiezan a la izquierda para poder desplazarse) y lleva un
+  contorno tenue discontinuo que **no** forma parte del DXF.
 - **Audio** (`PianoPlayer.ts`): ganancia 1.0 → limitador (−12 dB, 20:1, ataque 1 ms) → altavoces. Está
   medido con render offline de los samples: +13 a +16 dB respecto a la versión original y pico ≤ 0.82,
   sin saturación. Si cambias la cadena, vuelve a medir.
 - **Ajustes con Apply**: los paneles de ajustes se mantienen montados (ocultos) al cambiar de pestaña,
-  para que los cambios sin aplicar no se pierdan; la vista 3D solo se monta con su pestaña abierta. Si
+  para que los cambios sin aplicar no se pierdan. Si
   hay cambios sin aplicar se avisa en el panel (Apply / Discard) y junto a Download, porque la vista
   previa, el piano y el DXF usan siempre los valores aplicados. Download se desactiva si la tira no se
   puede generar. Hay tests de regresión de todo esto en `MusicBoxSheetGenerator.test.tsx`.
 - **UI**: siempre en **una sola columna** (preferencia del usuario). `MusicBoxSheetGenerator.tsx` (componente raíz). Los editores de perfil y formato validan con
-  `validateMusicBoxProfile` / `validateFormatOptions`. La vista 3D (Fischer Price) es experimental,
-  usa datos de ejemplo y se carga en diferido (`React.lazy`, three.js en un chunk aparte).
+  `validateMusicBoxProfile` / `validateFormatOptions`. Pestañas: MIDI File, Paper/Music Box Settings y
+  Layout/Pagination. La vista 3D experimental (disco Fisher-Price con three.js) se eliminó por decisión
+  del usuario: el proyecto es solo para tiras de papel.
 
 ## Convenciones
 

@@ -43,6 +43,7 @@ export default defineConfig({
         "src/utilities/MusicBoxLayout.ts": { statements: 95, branches: 90, functions: 95, lines: 95 },
         "src/utilities/DxfExporter.ts": { statements: 95, branches: 90, functions: 95, lines: 95 },
         "src/utilities/DxfReader.ts": { statements: 95, branches: 90, functions: 95, lines: 95 },
+        "src/utilities/SheetDrawing.ts": { statements: 95, branches: 90, functions: 95, lines: 95 },
       },
     },
   },

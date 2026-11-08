@@ -42,5 +42,5 @@ Changes made by [JoshJD11] on [2026-11-07]:
 - Track selection (auto, all tracks merged, or a single track); percussion channel ignored by default.
 - Strips are never cut through or too close to a hole, and never exceed the sheet size.
 - DXF files are generated directly from the strip geometry.
-- Settings validation, resource cleanup in the 3D view and audio player.
+- Settings validation and resource cleanup in the audio player.
 - Migrated from Create React App to Vite, Vitest, ESLint 10 and TypeScript 6.
