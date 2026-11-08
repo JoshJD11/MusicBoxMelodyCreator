@@ -32,35 +32,16 @@ describe('DxfDrawingSvg', () => {
         expect(container.querySelectorAll('circle').length).toBe(2);
         expect(container.querySelector('circle')!.getAttribute('r')).toBe('1.1');
     });
-
-    it('outlines the whole sheet faintly, behind the cut lines', () => {
-        const { container } = render(<DxfDrawingSvg drawing={drawing} />);
-        const outlines = container.querySelectorAll('rect.mb-sheetOutline');
-        expect(outlines.length).toBe(1);
-        const outline = outlines[0];
-        expect([outline.getAttribute('x'), outline.getAttribute('y')]).toEqual(['0', '0']);
-        expect([outline.getAttribute('width'), outline.getAttribute('height')]).toEqual(['200', '250']);
-        expect(outline.getAttribute('fill')).toBe('none');
-        expect(outline.getAttribute('stroke')).not.toBe('black');
-        expect(outline.getAttribute('stroke-dasharray')).toBeTruthy();
-        // Drawn first, so that the cut lines are on top of it.
-        expect(container.querySelector('svg')!.firstElementChild).toBe(outline);
-    });
-
-    it('is not part of the downloaded file', () => {
-        expect(createDxf(SHEET)).not.toMatch(/LWPOLYLINE|POLYLINE|SOLID|outline/i);
-        expect(drawing.lines.length).toBe(2);
-    });
 });
 
 describe('DxfPreview', () => {
-    it('draws one outlined sheet per DXF, in a height-limited box only when asked', () => {
+    it('draws one sheet per DXF, in a height-limited box only when asked', () => {
         const dxfs = [createDxf(SHEET), createDxf({ ...SHEET, widthMm: 100 })];
         const { container, rerender } = render(
             <DxfPreview files={{ layout: LAYOUT, dxfs }} paperWidthMm={70.1} limitHeight={true} />);
         expect(container.querySelectorAll('.mb-musicBoxSvgPages-limited svg').length).toBe(2);
-        expect(Array.from(container.querySelectorAll('rect.mb-sheetOutline')).map(r => r.getAttribute('width')))
-            .toEqual(['200', '100']);
+        expect(Array.from(container.querySelectorAll('.mb-musicBoxSvgWrapper > svg')).map(svg => svg.getAttribute('width')))
+            .toEqual(['200mm', '100mm']);
 
         rerender(<DxfPreview files={{ layout: LAYOUT, dxfs }} paperWidthMm={70.1} />);
         expect(container.querySelector('.mb-musicBoxSvgPages-limited')).toBeNull();

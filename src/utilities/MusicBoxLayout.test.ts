@@ -98,14 +98,31 @@ function expectPhysicallyValid(layout: IMusicBoxLayout, profile: IMusicBoxProfil
 
         // Nothing goes outside the sheet.
         const maxX = Math.max(0, ...geometry.lines.map(l => Math.max(l.x1, l.x2)), ...geometry.circles.map(c => c.cx + c.r));
-        expect(maxX).toBeLessThanOrEqual(sheet.widthMm + EPSILON);
-        expect(geometry.extentMm).toBeLessThanOrEqual(sheet.widthMm + EPSILON);
+        expect(strip.offsetXMm).toBeGreaterThanOrEqual(0);
+        expect(strip.offsetYMm).toBeGreaterThanOrEqual(0);
+        expect(strip.offsetXMm + maxX).toBeLessThanOrEqual(sheet.widthMm + EPSILON);
+        expect(strip.offsetXMm + geometry.extentMm).toBeLessThanOrEqual(sheet.widthMm + EPSILON);
         expect(strip.offsetYMm + profile.paperWidthMm).toBeLessThanOrEqual(sheet.heightMm + EPSILON);
 
         stripStartMm += geometry.lengthMm;
     });
 
     expect(Math.abs(layout.totalPaperLengthMm - stripStartMm)).toBeLessThan(1e-6);
+
+    // Every sheet's block of strips is centered (same margin on both sides, in both axes), the rows
+    // never overlap (at least STRIP_SPACING_MM apart) and all strips of a sheet start aligned.
+    layout.sheets.forEach(sheet => {
+        const first = sheet.strips[0];
+        const last = sheet.strips[sheet.strips.length - 1];
+        const longest = Math.max(...sheet.strips.map(s => s.geometry.extentMm));
+        sheet.strips.forEach(s => expect(s.offsetXMm).toBe(first.offsetXMm));
+        expect(Math.abs(first.offsetXMm - (sheet.widthMm - first.offsetXMm - longest))).toBeLessThan(1e-9);
+        expect(Math.abs(first.offsetYMm - (sheet.heightMm - last.offsetYMm - profile.paperWidthMm))).toBeLessThan(1e-9);
+        for (let j = 1; j < sheet.strips.length; j++) {
+            const gap = sheet.strips[j].offsetYMm - (sheet.strips[j - 1].offsetYMm + profile.paperWidthMm);
+            expect(gap).toBeGreaterThanOrEqual(STRIP_SPACING_MM - 1e-9);
+        }
+    });
 
     // What is cut (with the configured orientation) stays inside the sheet, jigsaw tabs included.
     expect(layout.drawings.length).toBe(layout.sheets.length);
@@ -221,7 +238,11 @@ describe('buildSheets', () => {
         const fifteen = BuiltInProfiles['fifteenNote']; // 41 mm: 4 * 41 + 3 * 10 = 194 <= 200
         const sheets = buildSheets(stripsOf(5), fifteen, FORMAT);
         expect(sheets.map(s => s.strips.length)).toEqual([4, 1]);
-        expect(sheets[0].strips.map(s => s.offsetYMm)).toEqual([0, 51, 102, 153]);
+        // Centered as a block: (200 - 194) / 2 = 3 mm above and below; (250 - 100) / 2 = 75 mm on each side.
+        expect(sheets[0].strips.map(s => s.offsetYMm)).toEqual([3, 54, 105, 156]);
+        expect(sheets[0].strips.map(s => s.offsetXMm)).toEqual([75, 75, 75, 75]);
+        // The single strip of the last sheet: (200 - 41) / 2.
+        expect(sheets[1].strips.map(s => s.offsetYMm)).toEqual([79.5]);
 
         const thirty = BuiltInProfiles['thirtyNote']; // 70.1 mm: 2 strips need 150.2 mm
         expect(buildSheets(stripsOf(3), thirty, { ...FORMAT, pageHeightMm: 150.2 }).map(s => s.strips.length)).toEqual([2, 1]);
@@ -244,6 +265,25 @@ describe('buildSheets', () => {
             thirty, { ...FORMAT, pageWidthMm: 0, pageHeightMm: 0 });
         expect(sheet.widthMm).toBe(2702);
         expect(sheet.heightMm).toBeCloseTo(2 * 70.1 + STRIP_SPACING_MM, 12);
+        // A sheet sized to its content has no margin at all.
+        expect(sheet.strips.map(s => [s.offsetXMm, s.offsetYMm])).toEqual([[0, 0], [0, 70.1 + STRIP_SPACING_MM]]);
+    });
+
+    it('centers the block, keeping the strips aligned to each other by their start', () => {
+        const thirty = BuiltInProfiles['thirtyNote'];
+        const strips = [...stripsOf(1, 200), { lengthMm: 120, extentMm: 120, lines: [], circles: [] }];
+        const [sheet] = buildSheets(strips, thirty, { ...FORMAT, pageWidthMm: 250, pageHeightMm: 200 });
+        // Longest strip 200 mm: (250 - 200) / 2 = 25 mm for both, even the shorter one.
+        expect(sheet.strips.map(s => s.offsetXMm)).toEqual([25, 25]);
+        // Two rows: 2 * 70.1 + 10 = 150.2 mm, (200 - 150.2) / 2 = 24.9 mm.
+        expect(sheet.strips[0].offsetYMm).toBeCloseTo(24.9, 12);
+        expect(sheet.strips[1].offsetYMm - sheet.strips[0].offsetYMm).toBeCloseTo(70.1 + STRIP_SPACING_MM, 12);
+    });
+
+    it('centers the block including a protruding jigsaw tab', () => {
+        const thirty = BuiltInProfiles['thirtyNote'];
+        const [sheet] = buildSheets([{ lengthMm: 200, extentMm: 202, lines: [], circles: [] }], thirty, FORMAT);
+        expect(sheet.strips[0].offsetXMm).toBe(24); // (250 - 202) / 2
     });
 });
 

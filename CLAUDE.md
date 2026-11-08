@@ -20,6 +20,7 @@ una nota no suene. Por eso:
   conservar los invariantes de `MusicBoxLayout.test.ts`:
   - cada agujero queda completo dentro de su tira, al menos a `CUT_CLEARANCE_MM` (0.5 mm) de un corte;
   - nada se sale de la hoja, incluida la lengüeta de las juntas tipo puzzle;
+  - el bloque de tiras de cada hoja está centrado y las filas quedan a ≥ 10 mm entre sí;
   - la posición absoluta de cada agujero en la cinta completa es `(t − inicio) × mm/s`.
 - Si un cambio debe dejar la salida igual, compara el DXF de los 3 `samples/` antes y después.
 - La vista previa se dibuja **leyendo los mismos documentos DXF que se descargan** (`parseDxf`). Se
@@ -76,6 +77,12 @@ archivo .mid
   pone en el punto medio entre notas y, si ahí no cabe, en un hueco anterior; si no hay hueco, da error.
   Con juntas tipo puzzle se reservan 2 mm. Tiras por hoja: `floor((alto + 10) / (anchoPapel + 10))`.
   Con tamaño 0 (sin límite), la hoja se ajusta al contenido.
+- **Centrado en el DXF** (`buildSheets`): las tiras de cada hoja se centran como **un bloque** en ambos
+  ejes (decisión del usuario): todas se desplazan igual (`offsetXMm`, `offsetYMm`), siguen alineadas por
+  su inicio y a 10 mm entre filas. Es un desplazamiento rígido: no cambia distancias entre agujeros,
+  cortes ni tiras. Se calcula en coordenadas de cinta, así que vale para horizontal y vertical, con o sin
+  espejo (el espejo refleja cada tira dentro de su franja). Una hoja ajustada al contenido tiene margen 0
+  exacto (salida idéntica a la de antes). Sustituye al contorno visual que se probó en la vista previa.
 - **Líneas de nota**: la nota más aguda queda arriba, a `(anchoPapel − anchoContenido) / 2` del borde
   superior.
 - **Espejo vertical** (`mirrorVertically`, desactivado por defecto): refleja cada tira dentro de su
@@ -103,8 +110,8 @@ archivo .mid
 - **Vista previa**: en vertical, el cuadro de las hojas mide como mucho el 75% del alto de la ventana y
   tiene scroll propio, para llegar rápido al final de la página. En horizontal no hay límite. El `<svg>`
   no recorta el trazo de las líneas que caen en el borde de la hoja (solo afecta a la pantalla). Cada hoja
-  se centra en el cuadro (las más anchas empiezan a la izquierda para poder desplazarse) y lleva un
-  contorno tenue discontinuo que **no** forma parte del DXF.
+  se centra en el cuadro (las más anchas empiezan a la izquierda para poder desplazarse). No se dibuja
+  nada que no esté en el DXF.
 - **Audio** (`PianoPlayer.ts`): ganancia 1.0 → limitador (−12 dB, 20:1, ataque 1 ms) → altavoces. Está
   medido con render offline de los samples: +13 a +16 dB respecto a la versión original y pico ≤ 0.82,
   sin saturación. Si cambias la cadena, vuelve a medir.

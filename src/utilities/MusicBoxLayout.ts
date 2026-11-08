@@ -55,7 +55,9 @@ export interface IStripGeometry {
 }
 
 export interface IPlacedStrip {
-    /** Vertical position of the strip in the sheet. */
+    /** Position of the strip along the tape (x), from the sheet's leading edge. */
+    offsetXMm: number;
+    /** Position of the strip across the tape (y): its row, from the sheet's top edge. */
     offsetYMm: number;
     geometry: IStripGeometry;
 }
@@ -306,7 +308,7 @@ export function mirrorStripVertically(strip: IStripGeometry, paperWidthMm: numbe
     };
 }
 
-/** Arranges the strips in rows on sheets of the configured size. */
+/** Arranges the strips in rows on sheets of the configured size, centered as a block. */
 export function buildSheets(
     strips: IStripGeometry[],
     profile: IMusicBoxProfile,
@@ -329,16 +331,27 @@ export function buildSheets(
     const sheets: ISheet[] = [];
     for (let first = 0; first < strips.length; first += stripsPerSheet) {
         const sheetStrips = strips.slice(first, first + stripsPerSheet);
-        const placed = sheetStrips.map((geometry, j) => ({ offsetYMm: j * stripPitch, geometry }));
+        // Size of the block of strips: the longest strip (with a protruding jigsaw tab), and the rows.
+        const contentLengthMm = Math.max(...sheetStrips.map(s => s.extentMm));
+        const contentAcrossMm = sheetStrips.length * profile.paperWidthMm + (sheetStrips.length - 1) * STRIP_SPACING_MM;
+        const widthMm = format.pageWidthMm > 0 ? format.pageWidthMm : contentLengthMm;
+        const heightMm = format.pageHeightMm > 0 ? format.pageHeightMm : contentAcrossMm;
+
+        // The whole block is centered on the sheet, as one piece: the strips keep their positions
+        // relative to each other. A sheet sized to its content has no margin (exactly 0). The
+        // content never exceeds the sheet (see paginateNotes and stripsPerSheet); Math.max only
+        // absorbs floating point noise.
+        const marginXMm = Math.max(0, (widthMm - contentLengthMm) / 2);
+        const marginYMm = Math.max(0, (heightMm - contentAcrossMm) / 2);
         sheets.push({
-            widthMm: format.pageWidthMm > 0
-                ? format.pageWidthMm
-                : Math.max(...sheetStrips.map(s => s.extentMm)),
-            heightMm: format.pageHeightMm > 0
-                ? format.pageHeightMm
-                : sheetStrips.length * profile.paperWidthMm + (sheetStrips.length - 1) * STRIP_SPACING_MM,
+            widthMm,
+            heightMm,
             stripWidthMm: profile.paperWidthMm,
-            strips: placed,
+            strips: sheetStrips.map((geometry, j) => ({
+                offsetXMm: marginXMm,
+                offsetYMm: marginYMm + j * stripPitch,
+                geometry,
+            })),
         });
     }
     return sheets;

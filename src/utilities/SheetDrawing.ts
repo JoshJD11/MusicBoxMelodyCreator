@@ -18,13 +18,14 @@ export interface ISheetDrawing {
 }
 
 /**
- * Places the strips of a sheet in sheet coordinates, with the given orientation.
+ * Places the strips of a sheet in sheet coordinates, with the given orientation. Each strip is at
+ * (offsetX, offsetY) in strip coordinates: along the tape, and across it (its row).
  *
- * - `horizontal`: strips are moved down to their row. Nothing else changes.
+ * - `horizontal`: a point (x, y) of a strip becomes (offsetX + x, offsetY + y).
  * - `vertical`: every strip is rotated 90° clockwise and placed in its column, from left to right in
- *   the same order as the rows. A point (x, y) of a strip becomes (column + stripWidth − y, x): the
- *   song runs downwards and the top edge of the strip (highest note) ends up on the right. The
- *   sheet's width and height are swapped.
+ *   the same order as the rows. A point (x, y) of a strip becomes (offsetY + stripWidth − y,
+ *   offsetX + x): the song runs downwards and the top edge of the strip (highest note) ends up on the
+ *   right. The sheet's width and height are swapped.
  *
  * Both are rigid motions of each strip: hole sizes, distances to the cuts and positions along the
  * tape don't change.
@@ -35,12 +36,12 @@ export function drawSheet(sheet: ISheet, orientation: StripOrientation = 'horizo
         return {
             widthMm: sheet.heightMm,
             heightMm: sheet.widthMm,
-            strips: sheet.strips.map(({ offsetYMm: column, geometry }) => ({
+            strips: sheet.strips.map(({ offsetXMm: along, offsetYMm: column, geometry }) => ({
                 lines: geometry.lines.map(l => ({
-                    x1: column + (w - l.y1), y1: l.x1,
-                    x2: column + (w - l.y2), y2: l.x2,
+                    x1: column + (w - l.y1), y1: along + l.x1,
+                    x2: column + (w - l.y2), y2: along + l.x2,
                 })),
-                circles: geometry.circles.map(c => ({ cx: column + (w - c.cy), cy: c.cx, r: c.r })),
+                circles: geometry.circles.map(c => ({ cx: column + (w - c.cy), cy: along + c.cx, r: c.r })),
             })),
         };
     }
@@ -48,9 +49,9 @@ export function drawSheet(sheet: ISheet, orientation: StripOrientation = 'horizo
     return {
         widthMm: sheet.widthMm,
         heightMm: sheet.heightMm,
-        strips: sheet.strips.map(({ offsetYMm: row, geometry }) => ({
-            lines: geometry.lines.map(l => ({ x1: l.x1, y1: l.y1 + row, x2: l.x2, y2: l.y2 + row })),
-            circles: geometry.circles.map(c => ({ cx: c.cx, cy: c.cy + row, r: c.r })),
+        strips: sheet.strips.map(({ offsetXMm: along, offsetYMm: row, geometry }) => ({
+            lines: geometry.lines.map(l => ({ x1: along + l.x1, y1: l.y1 + row, x2: along + l.x2, y2: l.y2 + row })),
+            circles: geometry.circles.map(c => ({ cx: along + c.cx, cy: c.cy + row, r: c.r })),
         })),
     };
 }
