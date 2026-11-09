@@ -5,10 +5,13 @@ import { render, fireEvent, cleanup, within, wait } from '@testing-library/react
 import MusicBoxSheetGenerator from './MusicBoxSheetGenerator';
 import MidiFile from './model/MidiFile';
 import { BuiltInProfiles } from './model/IMusicBoxProfile';
-import { computeMusicBoxLayout, fitSingleStrip } from './utilities/MusicBoxLayout';
+import { computeMusicBoxLayout, fitSingleStrip, IMusicBoxLayout } from './utilities/MusicBoxLayout';
 import { IMusicBoxSvgFormatOptions } from './model/IMusicBoxSvgFormatOptions';
 import { buildMidi, endOfTrack, noteOff, noteOn } from './testUtils/midiBuilder';
 import { createDxf } from './utilities/DxfExporter';
+import { parseDxf } from './utilities/DxfReader';
+import { buildGeneratedMusicBoxSequence } from './utilities/MusicBoxMidi';
+import PianoPlayer from './utilities/PianoPlayer';
 import { detectNotes } from './utilities/BasicPitchTranscriber';
 import {
     DEFAULT_AUDIO_TRANSCRIPTION_SETTINGS,
@@ -554,6 +557,30 @@ describe('MusicBoxSheetGenerator with MP3 files (experimental)', () => {
         expect(circles(container)).toBe(2);
     });
 
+    it('holes deleted by hand are dropped when the notes are detected again (and the panel says so)', async () => {
+        const { container, findByText, getByText, queryByText } = render(<MusicBoxSheetGenerator />);
+        pickFile(container, mp3());
+        await findByText('2 notes detected.');
+        const holes = () => container.querySelectorAll('.mb-musicBoxSvgWrapper circle[stroke="black"]');
+        const svg = container.querySelector('.mb-musicBoxSvgWrapper svg') as SVGSVGElement;
+        svg.getBoundingClientRect = () => {
+            const [, , w, h] = svg.getAttribute('viewBox')!.split(' ').map(Number);
+            return { left: 0, top: 0, x: 0, y: 0, width: w, height: h, right: w, bottom: h, toJSON: () => ({}) };
+        };
+        const first = holes()[0];
+        fireEvent.click(svg, { clientX: Number(first.getAttribute('cx')), clientY: Number(first.getAttribute('cy')) });
+        fireEvent.keyDown(document.body, { key: 'Delete' });
+        expect(holes().length).toBe(1);
+        expect(getByText(/You deleted 1 hole by\s+hand\. Moving a slider detects the notes again and brings them back/)).toBeTruthy();
+
+        moveSlider(container, 'minNoteLengthFrames', -4);
+        await findByText('3 notes detected.');
+        expect(holes().length).toBe(3);
+        expect(getByText('No holes deleted')).toBeTruthy();
+        expect((getByText('Undo').closest('button') as HTMLButtonElement).disabled).toBe(true);
+        expect(queryByText(/You deleted/)).toBeNull();
+    });
+
     it('can end up with no notes: the preview explains it and the download is disabled', async () => {
         audioMocks.analysis = activations([]);
         const { container, findByText, getByText } = render(<MusicBoxSheetGenerator />);
@@ -602,5 +629,298 @@ describe('MusicBoxSheetGenerator with MP3 files (experimental)', () => {
         await findByText('MIDI ready');
         expect(queryByText(/Tempo:/)).not.toBeNull();
         expect(circles(container)).toBe(computeMusicBoxLayout(loadSampleMidi(), BuiltInProfiles['thirtyNote'], fittedFormat()).extraction.notes.length);
+    });
+});
+
+describe('MusicBoxSheetGenerator: deleting holes in the preview', () => {
+    const createdBlobs: Blob[] = [];
+    const THIRTY = BuiltInProfiles['thirtyNote'];
+    /** jsdom has no layout: every sheet is drawn at 10 px per mm, at the top-left corner. */
+    const PX_PER_MM = 10;
+
+    beforeEach(() => {
+        createdBlobs.length = 0;
+        Object.defineProperty(URL, 'createObjectURL', {
+            configurable: true,
+            value: vi.fn((blob: Blob) => {
+                createdBlobs.push(blob);
+                return 'blob:test-' + createdBlobs.length;
+            }),
+        });
+        Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+        vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+        cleanup();
+        vi.restoreAllMocks();
+    });
+
+    /** The holes drawn from the DXF (not the highlights). */
+    const dxfHoles = (container: HTMLElement) => container.querySelectorAll('.mb-musicBoxSvgWrapper circle[stroke="black"]').length;
+    const selectedHoles = (container: HTMLElement) => container.querySelectorAll('.mb-hole-selected').length;
+    const button = (getByText: (text: string | RegExp) => HTMLElement, text: string | RegExp) =>
+        getByText(text).closest('button') as HTMLButtonElement;
+    const layoutFor = (deleted: string[] = [], format = fittedFormat(), profile = THIRTY) =>
+        computeMusicBoxLayout(loadSampleMidi(), profile, format, 'auto', new Set(deleted));
+
+    /** Clicks (or taps) the hole of `noteId`, at its position in the layout the app should show. */
+    function clickHole(container: HTMLElement, layout: IMusicBoxLayout, noteId: string) {
+        const sheet = layout.holeNotes.findIndex(notes => notes.some(n => n.id === noteId));
+        expect(sheet).toBeGreaterThanOrEqual(0);
+        const index = layout.holeNotes[sheet].findIndex(n => n.id === noteId);
+        const circle = parseDxf(createDxf(layout.drawings[sheet])).circles[index];
+        const svg = container.querySelectorAll('.mb-musicBoxSvgWrapper svg')[sheet] as SVGSVGElement;
+        svg.getBoundingClientRect = () => {
+            const [, , w, h] = svg.getAttribute('viewBox')!.split(' ').map(Number);
+            return { left: 0, top: 0, x: 0, y: 0, width: w * PX_PER_MM, height: h * PX_PER_MM, right: w * PX_PER_MM, bottom: h * PX_PER_MM, toJSON: () => ({}) };
+        };
+        fireEvent.click(svg, { clientX: circle.cx * PX_PER_MM, clientY: circle.cy * PX_PER_MM });
+    }
+
+    async function loadSample() {
+        const utils = render(<MusicBoxSheetGenerator />);
+        pickFile(utils.container, new File([sampleBytes()], SAMPLE, { type: 'audio/midi' }));
+        await utils.findByText('MIDI ready');
+        return utils;
+    }
+
+    async function downloadAll(getByText: (text: string) => HTMLElement): Promise<string[]> {
+        createdBlobs.length = 0;
+        fireEvent.click(getByText('Download DXF(s)'));
+        return Promise.all(createdBlobs.map(readBlob));
+    }
+
+    const key = (k: string, extra: object = {}) => fireEvent.keyDown(document.body, { key: k, ...extra });
+
+    it('selects holes with a click (again to unselect), deletes them with Backspace or Delete, and downloads the DXF without them', async () => {
+        const { container, getByText } = await loadSample();
+        const layout = layoutFor();
+        const ids = layout.extraction.notes.map(n => n.id);
+        const total = ids.length;
+        expect(dxfHoles(container)).toBe(total);
+        expect(getByText(/Click a hole to select it/)).toBeTruthy();
+        expect(button(getByText, 'Delete').disabled).toBe(true);
+        expect(getByText('No holes deleted')).toBeTruthy();
+
+        clickHole(container, layout, ids[5]);
+        clickHole(container, layout, ids[10]);
+        expect(selectedHoles(container)).toBe(2);
+        expect(getByText('Delete 2 holes')).toBeTruthy();
+        clickHole(container, layout, ids[5]); // unselect
+        expect(selectedHoles(container)).toBe(1);
+        expect(getByText(/1 selected/)).toBeTruthy();
+        clickHole(container, layout, ids[5]);
+        expect(selectedHoles(container)).toBe(2);
+        // Nothing is deleted until asked: the DXF is still complete.
+        expect(dxfHoles(container)).toBe(total);
+
+        // Backspace deletes (and doesn't navigate back).
+        expect(key('Backspace')).toBe(false);
+        expect(dxfHoles(container)).toBe(total - 2);
+        expect(selectedHoles(container)).toBe(0);
+        expect(getByText('2 holes deleted')).toBeTruthy();
+        expect(await downloadAll(getByText)).toEqual(layoutFor([ids[5], ids[10]]).drawings.map(createDxf));
+
+        // The Delete key too.
+        const afterTwo = layoutFor([ids[5], ids[10]]);
+        clickHole(container, afterTwo, ids[20]);
+        key('Delete');
+        expect(dxfHoles(container)).toBe(total - 3);
+        expect(await downloadAll(getByText)).toEqual(layoutFor([ids[5], ids[10], ids[20]]).drawings.map(createDxf));
+
+        // With nothing selected, Backspace does nothing (and keeps its default behavior).
+        expect(key('Backspace')).toBe(true);
+        expect(dxfHoles(container)).toBe(total - 3);
+    });
+
+    it('deletes with the button, undoes with the button or Ctrl+Z / Cmd+Z one step at a time, and restores everything (undoable)', async () => {
+        const { container, getByText } = await loadSample();
+        const ids = layoutFor().extraction.notes.map(n => n.id);
+        const total = ids.length;
+        expect(button(getByText, 'Undo').disabled).toBe(true);
+        expect(button(getByText, 'Restore all').disabled).toBe(true);
+
+        // Step 1: one hole; step 2: two more.
+        clickHole(container, layoutFor(), ids[3]);
+        fireEvent.click(getByText('Delete 1 hole'));
+        clickHole(container, layoutFor([ids[3]]), ids[7]);
+        clickHole(container, layoutFor([ids[3]]), ids[8]);
+        fireEvent.click(getByText('Delete 2 holes'));
+        expect(dxfHoles(container)).toBe(total - 3);
+        expect(button(getByText, 'Undo').disabled).toBe(false);
+
+        expect(key('z', { ctrlKey: true })).toBe(false);
+        expect(dxfHoles(container)).toBe(total - 1);
+        fireEvent.click(getByText('Undo'));
+        expect(dxfHoles(container)).toBe(total);
+        expect(button(getByText, 'Undo').disabled).toBe(true);
+        // Nothing left to undo: Ctrl+Z is left alone.
+        expect(key('z', { ctrlKey: true })).toBe(true);
+
+        clickHole(container, layoutFor(), ids[1]);
+        clickHole(container, layoutFor(), ids[2]);
+        key('Backspace');
+        expect(dxfHoles(container)).toBe(total - 2);
+        fireEvent.click(getByText('Restore all'));
+        expect(dxfHoles(container)).toBe(total);
+        expect(button(getByText, 'Restore all').disabled).toBe(true);
+        expect(await downloadAll(getByText)).toEqual(layoutFor().drawings.map(createDxf));
+
+        // "Restore all" can be undone (Cmd+Z on a Mac).
+        key('z', { metaKey: true });
+        expect(dxfHoles(container)).toBe(total - 2);
+        expect(await downloadAll(getByText)).toEqual(layoutFor([ids[1], ids[2]]).drawings.map(createDxf));
+        // Ctrl+Shift+Z (redo in some apps) does nothing here.
+        key('z', { ctrlKey: true, shiftKey: true });
+        expect(dxfHoles(container)).toBe(total - 2);
+    });
+
+    it('Esc and the Unselect button clear the selection', async () => {
+        const { container, getByText, queryByText } = await loadSample();
+        const ids = layoutFor().extraction.notes.map(n => n.id);
+        clickHole(container, layoutFor(), ids[0]);
+        clickHole(container, layoutFor(), ids[1]);
+        key('Escape');
+        expect(selectedHoles(container)).toBe(0);
+        expect(queryByText('Unselect')).toBeNull();
+
+        clickHole(container, layoutFor(), ids[0]);
+        fireEvent.click(getByText('Unselect'));
+        expect(selectedHoles(container)).toBe(0);
+        expect(button(getByText, 'Delete').disabled).toBe(true);
+    });
+
+    it('leaves the keys alone while typing in a field (they edit the text there)', async () => {
+        const { container, getByText, getByRole } = await loadSample();
+        const ids = layoutFor().extraction.notes.map(n => n.id);
+        const total = ids.length;
+        clickHole(container, layoutFor(), ids[0]);
+        fireEvent.click(getByText('Delete 1 hole'));
+        clickHole(container, layoutFor([ids[0]]), ids[1]);
+
+        fireEvent.click(getByText('Layout/Pagination'));
+        const input = numericInput(within(getByRole('tabpanel')).getByText(/Start padding/));
+        expect(fireEvent.keyDown(input, { key: 'Backspace' })).toBe(true);
+        expect(fireEvent.keyDown(input, { key: 'z', ctrlKey: true })).toBe(true);
+        expect(fireEvent.keyDown(input, { key: 'Escape' })).toBe(true);
+        expect(dxfHoles(container)).toBe(total - 1);
+        expect(selectedHoles(container)).toBe(1);
+    });
+
+    it('a sheet fitted to the song is fitted again when its last notes are deleted; sizes typed by hand are kept', async () => {
+        const { container, getByText, getByRole } = await loadSample();
+        const panel = () => within(getByRole('tabpanel'));
+        const sizes = () => {
+            fireEvent.click(getByText('Layout/Pagination'));
+            return [numericInput(panel().getByText(/Max strip length/)).value, numericInput(panel().getByText(/Sheet width/)).value];
+        };
+        const notes = layoutFor().extraction.notes;
+        const lastTime = notes[notes.length - 1].timeSeconds;
+        const last = notes.filter(n => n.timeSeconds === lastTime).map(n => n.id);
+        const fitted = fittedFormat();
+        const shorter = fitSingleStrip(loadSampleMidi(), THIRTY, DEFAULT_FORMAT, 'auto', new Set(last));
+        expect(shorter.pageWidthMm).toBeLessThan(fitted.pageWidthMm);
+
+        last.forEach(id => clickHole(container, layoutFor(), id));
+        key('Delete');
+        expect(sizes()).toEqual([String(shorter.pageWidthMm), '70.1']);
+        expect(await downloadAll(getByText)).toEqual(layoutFor(last, shorter).drawings.map(createDxf));
+
+        // Undo: the whole song again, on its fitted sheet.
+        fireEvent.click(getByText('Undo'));
+        expect(sizes()).toEqual([String(fitted.pageWidthMm), '70.1']);
+
+        // Interior holes don't change the length.
+        clickHole(container, layoutFor(), notes[4].id);
+        key('Delete');
+        expect(sizes()).toEqual([String(fitted.pageWidthMm), '70.1']);
+        fireEvent.click(getByText('Undo'));
+
+        // My own sizes are kept.
+        fireEvent.change(numericInput(panel().getByText(/Max strip length/)), { target: { value: '190' } });
+        fireEvent.change(numericInput(panel().getByText(/Sheet width/)), { target: { value: '200' } });
+        fireEvent.click(panel().getAllByText('Apply')[0]);
+        const typed = { ...fitted, pageWidthMm: 190, pageHeightMm: 200 };
+        last.forEach(id => clickHole(container, layoutFor([], typed), id));
+        key('Delete');
+        expect(sizes()).toEqual(['190', '200']);
+        expect(await downloadAll(getByText)).toEqual(layoutFor(last, typed).drawings.map(createDxf));
+    });
+
+    it('the piano never plays deleted holes; while playing or paused it goes on with the new notes', async () => {
+        vi.spyOn(PianoPlayer, 'isSupported').mockReturnValue(true);
+        const played: unknown[] = [];
+        vi.spyOn(PianoPlayer.prototype, 'play').mockImplementation(async (sequence) => { played.push(sequence); });
+        const updated: unknown[] = [];
+        vi.spyOn(PianoPlayer.prototype, 'updateSequence').mockImplementation((sequence) => { updated.push(sequence); });
+        const state = vi.spyOn(PianoPlayer.prototype, 'getState').mockReturnValue('stopped');
+
+        const { container, getByText } = await loadSample();
+        const ids = layoutFor().extraction.notes.map(n => n.id);
+        const pianoWithout = (deleted: string[]) => buildGeneratedMusicBoxSequence(loadSampleMidi(), THIRTY,
+            { transposeOutOfRangeNotes: true, includePercussion: false, trackSelection: 'auto', deletedNoteIds: new Set(deleted) });
+
+        // Stopped: nothing to update; the next play has no deleted notes.
+        clickHole(container, layoutFor(), ids[2]);
+        key('Delete');
+        expect(updated.length).toBe(0);
+        fireEvent.click(getByText('Restart piano'));
+        await wait(() => expect(played.length).toBe(1));
+        expect(played[0]).toEqual(pianoWithout([ids[2]]));
+        expect((played[0] as unknown[]).length).toBe(ids.length - 1);
+
+        // Playing: the song is updated where it is (not restarted).
+        state.mockReturnValue('playing');
+        clickHole(container, layoutFor([ids[2]]), ids[6]);
+        key('Delete');
+        expect(updated).toEqual([pianoWithout([ids[2], ids[6]])]);
+        // Paused too, and undo brings the note back to the piano.
+        state.mockReturnValue('paused');
+        key('z', { ctrlKey: true });
+        expect(updated[1]).toEqual(pianoWithout([ids[2]]));
+        expect(played.length).toBe(1);
+    });
+
+    it('keeps the deleted holes when the settings change, and forgets them when a file is loaded', async () => {
+        const { container, getByText, findByText } = await loadSample();
+        const fifteen = BuiltInProfiles['fifteenNote'];
+        // A note that the 15 note box can play too.
+        const notes15 = computeMusicBoxLayout(loadSampleMidi(), fifteen, fitSingleStrip(loadSampleMidi(), fifteen, DEFAULT_FORMAT)).extraction.notes;
+        const target = layoutFor().extraction.notes.find(n => notes15.some(m => m.id === n.id))!;
+        clickHole(container, layoutFor(), target.id);
+        key('Delete');
+
+        fireEvent.click(getByText('Paper/Music Box Settings'));
+        fireEvent.click(getByText('Select profile...'));
+        fireEvent.click(await findByText('15 Note'));
+        const format15 = fitSingleStrip(loadSampleMidi(), fifteen, DEFAULT_FORMAT, 'auto', new Set([target.id]));
+        const expected15 = computeMusicBoxLayout(loadSampleMidi(), fifteen, format15, 'auto', new Set([target.id]));
+        expect(expected15.extraction.deletedCount).toBe(1);
+        expect(dxfHoles(container)).toBe(notes15.length - 1);
+        expect(await downloadAll(getByText)).toEqual(expected15.drawings.map(createDxf));
+        expect(getByText('1 hole deleted')).toBeTruthy();
+
+        // Loading a file (even the same one) starts with every hole.
+        pickFile(container, new File([sampleBytes()], SAMPLE, { type: 'audio/midi' }));
+        await wait(() => expect(getByText('No holes deleted')).toBeTruthy());
+        expect(dxfHoles(container)).toBe(notes15.length);
+        expect(button(getByText, 'Undo').disabled).toBe(true);
+    });
+
+    it('deleting every hole explains how to bring them back; undo does', async () => {
+        const { container, getByText } = await loadSample();
+        const layout = layoutFor();
+        const ids = layout.extraction.notes.map(n => n.id);
+        ids.forEach(id => clickHole(container, layout, id));
+        expect(getByText(`Delete ${ids.length} holes`)).toBeTruthy();
+        key('Backspace');
+        expect(getByText('Every hole was deleted. Use Undo or Restore all to bring them back.')).toBeTruthy();
+        expect(button(getByText, 'Download DXF(s)').disabled).toBe(true);
+        expect(dxfHoles(container)).toBe(0);
+
+        fireEvent.click(getByText('Undo'));
+        expect(dxfHoles(container)).toBe(ids.length);
+        expect(await downloadAll(getByText)).toEqual(layout.drawings.map(createDxf));
     });
 });

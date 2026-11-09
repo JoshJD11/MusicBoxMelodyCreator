@@ -70,7 +70,7 @@ function loadSample(name: string): MidiFile {
 
 function note(midiNote: number, timeSeconds: number): IMusicBoxNote {
     return {
-        note: midiNote, originalNote: midiNote, timeSeconds, velocity: 100, durationSeconds: 0.5, channel: 0, trackIndex: 0,
+        id: `0:${midiNote}@${timeSeconds}`, note: midiNote, originalNote: midiNote, timeSeconds, velocity: 100, durationSeconds: 0.5, channel: 0, trackIndex: 0,
     };
 }
 

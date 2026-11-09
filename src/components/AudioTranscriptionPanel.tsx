@@ -34,6 +34,8 @@ export interface IAudioTranscriptionPanelProps {
     noteCount: number;
     /** Silence removed before the first note. */
     trimmedSeconds: number;
+    /** Holes deleted by hand in the preview: detecting the notes again brings them back. */
+    deletedHoleCount?: number;
     /** Called when a slider is released (or reset): the notes are detected again. */
     onChange(settings: IAudioTranscriptionSettings): void;
 }
@@ -97,6 +99,13 @@ export function AudioTranscriptionPanel(props: IAudioTranscriptionPanelProps) {
                 <p className="mb-audioTranscription-trimmed">
                     The {props.trimmedSeconds.toFixed(2)} s of silence before the first note were removed, so
                     the strip doesn&apos;t start with blank paper.
+                </p>
+            )}
+            {!!props.deletedHoleCount && (
+                <p className="mb-audioTranscription-deleted" role="note">
+                    You deleted {props.deletedHoleCount} {props.deletedHoleCount === 1 ? 'hole' : 'holes'} by
+                    hand. Moving a slider detects the notes again and brings them back: set the sensitivity
+                    first, then delete the false notes.
                 </p>
             )}
             {SLIDERS.map(({ key, label, hint, format }) => {

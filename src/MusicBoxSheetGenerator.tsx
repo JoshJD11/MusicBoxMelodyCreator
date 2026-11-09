@@ -12,17 +12,26 @@ import {
 } from "@blueprintjs/core";
 import MidiFilePicker from "./components/MidiFilePicker";
 import DxfPreview, { IStripFiles } from "./components/DxfPreview";
+import { HoleEditToolbar } from "./components/HoleEditToolbar";
 import { MusicBoxProfileEditor } from "./components/MusicBoxProfileEditor";
 import { MusicBoxSvgFormatEditor } from "./components/MusicBoxSvgFormatEditor";
 import MidiFile from "./model/MidiFile";
 import { IMusicBoxSvgFormatOptions, shouldRefitSheet } from "./model/IMusicBoxSvgFormatOptions";
 import { BuiltInProfiles, IMusicBoxProfile } from "./model/IMusicBoxProfile";
 import MidiJsonConverter from "./utilities/MidiJsonConverter";
-import { buildGeneratedMusicBoxSequence } from "./utilities/MusicBoxMidi";
+import { buildGeneratedMusicBoxSequence, IGeneratedMusicBoxEvent } from "./utilities/MusicBoxMidi";
 import { TrackSelection } from "./utilities/MusicBoxNotes";
 import { computeMusicBoxLayout, fitSingleStrip } from "./utilities/MusicBoxLayout";
 import { createDxf } from "./utilities/DxfExporter";
 import PianoPlayer, { PlaybackState } from "./utilities/PianoPlayer";
+import {
+  canUndoHoleEdit,
+  deleteHoles,
+  IHoleEdits,
+  NO_HOLE_EDITS,
+  restoreAllHoles,
+  undoHoleEdit,
+} from "./utilities/HoleEdits";
 
 const CREDITS: { asset: string; by: string; url?: string }[] = [
   {
@@ -50,6 +59,8 @@ const DEFAULT_FORMAT_OPTIONS: IMusicBoxSvgFormatOptions = {
   stripOrientation: "vertical",
 };
 
+const NO_SELECTION: ReadonlySet<string> = new Set<string>();
+
 interface IAppState {
   midiJson: string;
   fileName?: string;
@@ -63,6 +74,14 @@ interface IAppState {
   /** Settings panels with edited values that have not been applied yet. */
   unappliedPaper: boolean;
   unappliedLayout: boolean;
+  /**
+   * Holes deleted by hand in the preview, with their undo history. They belong to the loaded file:
+   * kept when the settings change, dropped when another file is loaded or the MP3's notes are
+   * detected again.
+   */
+  holeEdits: IHoleEdits;
+  /** Holes selected in the preview (note ids). */
+  selectedHoles: ReadonlySet<string>;
 }
 
 type SettingsTab = "file-picker-tab" | "paper-settings-tab" | "format-settings-tab";
@@ -90,6 +109,8 @@ export default class MusicBoxSheetGenerator extends React.Component<
       unappliedLayout: false,
       showMidiJson: false,
       playbackState: "stopped",
+      holeEdits: NO_HOLE_EDITS,
+      selectedHoles: NO_SELECTION,
     };
   }
 
@@ -100,7 +121,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
     this.setState({ unappliedLayout });
 
   private layoutCache?: {
-    inputs: [MidiFile, IMusicBoxProfile, IMusicBoxSvgFormatOptions, TrackSelection];
+    inputs: LayoutInputs;
     result: IStripFiles;
   };
 
@@ -109,19 +130,20 @@ export default class MusicBoxSheetGenerator extends React.Component<
    * don't change): the preview draws these documents and the download saves them.
    */
   private getLayout(): IStripFiles | null {
-    const { midiFile, musicBoxProfile, musicBoxSvgFormatOptions, trackSelection } = this.state;
+    const { midiFile, musicBoxProfile, musicBoxSvgFormatOptions, trackSelection, holeEdits } = this.state;
     if (!midiFile) {
       return null;
     }
-    const inputs: [MidiFile, IMusicBoxProfile, IMusicBoxSvgFormatOptions, TrackSelection] =
-      [midiFile, musicBoxProfile, musicBoxSvgFormatOptions, trackSelection];
+    const inputs: LayoutInputs =
+      [midiFile, musicBoxProfile, musicBoxSvgFormatOptions, trackSelection, holeEdits.deleted];
     const cached = this.layoutCache;
     if (cached && cached.inputs.every((value, i) => value === inputs[i])) {
       return cached.result;
     }
     let result: IStripFiles;
     try {
-      const layout = computeMusicBoxLayout(midiFile, musicBoxProfile, musicBoxSvgFormatOptions, trackSelection);
+      const layout = computeMusicBoxLayout(
+        midiFile, musicBoxProfile, musicBoxSvgFormatOptions, trackSelection, holeEdits.deleted);
       result = { layout, dxfs: layout.drawings.map(createDxf) };
     } catch (error) {
       result = { error: error instanceof Error ? error.message : String(error) };
@@ -130,8 +152,107 @@ export default class MusicBoxSheetGenerator extends React.Component<
     return result;
   }
 
+  public componentDidMount() {
+    document.addEventListener("keydown", this.onKeyDown);
+  }
+
   public componentWillUnmount() {
+    document.removeEventListener("keydown", this.onKeyDown);
     this.player.dispose();
+  }
+
+  /**
+   * Keyboard shortcuts of the hole editor: Backspace / Delete delete the selected holes, Esc
+   * unselects them and Ctrl+Z (⌘Z) undoes. Not while typing in a field, where those keys edit the
+   * text (its own undo included).
+   */
+  private readonly onKeyDown = (event: KeyboardEvent) => {
+    if (event.defaultPrevented || !this.state.midiFile || isTextEntry(event.target)) {
+      return;
+    }
+    const commandKey = event.ctrlKey || event.metaKey;
+    const key = event.key || "";
+    if (commandKey && !event.shiftKey && !event.altKey && key.toLowerCase() === "z") {
+      if (canUndoHoleEdit(this.state.holeEdits)) {
+        event.preventDefault();
+        this.undoHoleEdit();
+      }
+      return;
+    }
+    if (commandKey || event.altKey) {
+      return;
+    }
+    if (key === "Backspace" || key === "Delete") {
+      if (this.getSelectedHolesOnStrip().length > 0) {
+        // Backspace also means "go back" in some browsers.
+        event.preventDefault();
+        this.deleteSelectedHoles();
+      }
+    } else if (key === "Escape" && this.state.selectedHoles.size > 0) {
+      this.clearHoleSelection();
+    }
+  };
+
+  /** Selected holes that are on the strip with the current settings. */
+  private getSelectedHolesOnStrip(): string[] {
+    const files = this.getLayout();
+    const selected = this.state.selectedHoles;
+    if (!files || !files.layout || selected.size === 0) {
+      return [];
+    }
+    return files.layout.extraction.notes.map((note) => note.id).filter((id) => selected.has(id));
+  }
+
+  private readonly toggleHoleSelection = (noteId: string) => {
+    this.setState((state) => {
+      const selectedHoles = new Set(state.selectedHoles);
+      if (!selectedHoles.delete(noteId)) {
+        selectedHoles.add(noteId);
+      }
+      return { selectedHoles };
+    });
+  };
+
+  private clearHoleSelection() {
+    this.setState({ selectedHoles: NO_SELECTION });
+  }
+
+  private deleteSelectedHoles() {
+    const ids = this.getSelectedHolesOnStrip();
+    if (ids.length > 0) {
+      this.applyHoleEdits(deleteHoles(this.state.holeEdits, ids));
+    }
+  }
+
+  private undoHoleEdit() {
+    this.applyHoleEdits(undoHoleEdit(this.state.holeEdits));
+  }
+
+  private restoreAllHoles() {
+    this.applyHoleEdits(restoreAllHoles(this.state.holeEdits));
+  }
+
+  /**
+   * Applies deleted / restored holes: the strip, the DXF and the piano change; a piano that is
+   * playing (or paused) goes on from where it is with the new notes. If the sheet was fitted to the
+   * song it is fitted again (the song can now be shorter or longer); sizes typed by hand are kept.
+   */
+  private applyHoleEdits(holeEdits: IHoleEdits) {
+    if (holeEdits === this.state.holeEdits) {
+      return;
+    }
+    this.setState(
+      (state) => ({
+        holeEdits,
+        selectedHoles: NO_SELECTION,
+        musicBoxSvgFormatOptions: refitAfterHoleEdits(state, holeEdits.deleted),
+      }),
+      () => {
+        if (this.player.getState() !== "stopped") {
+          this.player.updateSequence(this.buildPianoSequence());
+        }
+      }
+    );
   }
 
   render() {
@@ -158,13 +279,15 @@ export default class MusicBoxSheetGenerator extends React.Component<
           includePercussion={
             !!this.state.musicBoxSvgFormatOptions.includePercussion
           }
+          deletedHoleCount={this.state.holeEdits.deleted.size}
           onTrackSelectionChange={(trackSelection) => {
             this.player.stop();
             // Other notes, other length: the sheet is fitted again.
             this.setState((state) => ({
               trackSelection,
               musicBoxSvgFormatOptions: fitFormatToSong(
-                state.midiFile, state.musicBoxProfile, state.musicBoxSvgFormatOptions, trackSelection),
+                state.midiFile, state.musicBoxProfile, state.musicBoxSvgFormatOptions, trackSelection,
+                state.holeEdits.deleted),
             }));
           }}
         />
@@ -183,7 +306,8 @@ export default class MusicBoxSheetGenerator extends React.Component<
             this.setState((state) => ({
               musicBoxProfile,
               musicBoxSvgFormatOptions: fitFormatToSong(
-                state.midiFile, musicBoxProfile, state.musicBoxSvgFormatOptions, state.trackSelection),
+                state.midiFile, musicBoxProfile, state.musicBoxSvgFormatOptions, state.trackSelection,
+                state.holeEdits.deleted),
             }));
           }}
         />
@@ -199,7 +323,8 @@ export default class MusicBoxSheetGenerator extends React.Component<
             this.player.stop();
             this.setState((state) => ({
               musicBoxSvgFormatOptions: shouldRefitSheet(state.musicBoxSvgFormatOptions, musicBoxSvgFormatOptions)
-                ? fitFormatToSong(state.midiFile, state.musicBoxProfile, musicBoxSvgFormatOptions, state.trackSelection)
+                ? fitFormatToSong(state.midiFile, state.musicBoxProfile, musicBoxSvgFormatOptions,
+                  state.trackSelection, state.holeEdits.deleted)
                 : musicBoxSvgFormatOptions,
             }));
           }}
@@ -210,6 +335,22 @@ export default class MusicBoxSheetGenerator extends React.Component<
     const isPlaying = this.state.playbackState === "playing";
     const layout = this.getLayout();
     const layoutError = layout ? layout.error : undefined;
+    const holeEdits = this.state.holeEdits;
+    const canUndoHoles = canUndoHoleEdit(holeEdits);
+    // The toolbar stays when the strip can't be drawn only if a deletion can be undone or restored.
+    const showHoleToolbar = !!layout && (!layoutError || canUndoHoles || holeEdits.deleted.size > 0);
+    const holeToolbar = showHoleToolbar ? (
+      <HoleEditToolbar
+        selectedCount={this.getSelectedHolesOnStrip().length}
+        deletedCount={layout && layout.layout ? layout.layout.extraction.deletedCount : holeEdits.deleted.size}
+        canUndo={canUndoHoles}
+        canRestore={holeEdits.deleted.size > 0}
+        onDelete={() => this.deleteSelectedHoles()}
+        onClearSelection={() => this.clearHoleSelection()}
+        onUndo={() => this.undoHoleEdit()}
+        onRestoreAll={() => this.restoreAllHoles()}
+      />
+    ) : undefined;
     const unappliedPanels = [
       this.state.unappliedPaper ? "Paper/Music Box Settings" : null,
       this.state.unappliedLayout ? "Layout/Pagination" : null,
@@ -307,6 +448,9 @@ export default class MusicBoxSheetGenerator extends React.Component<
                     files={layout}
                     paperWidthMm={this.state.musicBoxProfile.paperWidthMm}
                     limitHeight={this.state.musicBoxSvgFormatOptions.stripOrientation === "vertical"}
+                    selectedHoleIds={this.state.selectedHoles}
+                    onHoleClick={this.toggleHoleSelection}
+                    toolbar={holeToolbar}
                   />
                 )}
               </div>
@@ -352,6 +496,8 @@ export default class MusicBoxSheetGenerator extends React.Component<
       midiFile: undefined,
       fileName: undefined,
       midiJson: "",
+      holeEdits: NO_HOLE_EDITS,
+      selectedHoles: NO_SELECTION,
     });
   }
 
@@ -362,6 +508,9 @@ export default class MusicBoxSheetGenerator extends React.Component<
       fileName,
       midiJson: MidiJsonConverter.GetJson(midiFile),
       trackSelection: "auto",
+      // Holes deleted by hand belong to the previous file.
+      holeEdits: NO_HOLE_EDITS,
+      selectedHoles: NO_SELECTION,
       // Every load (even of the same file) fits the sheet to the whole song on a single strip, with
       // the paper border drawn.
       musicBoxSvgFormatOptions: fitFormatToSong(
@@ -369,12 +518,17 @@ export default class MusicBoxSheetGenerator extends React.Component<
     }));
   }
 
-  /** The notes of the loaded MP3 were detected again with other settings: other notes, other length. */
+  /**
+   * The notes of the loaded MP3 were detected again with other settings: other notes, other length.
+   * The holes deleted by hand were notes of the previous detection, so they are dropped.
+   */
   private onMidiDataReconverted(midiFile: MidiFile) {
     this.player.stop();
     this.setState((state) => ({
       midiFile,
       midiJson: MidiJsonConverter.GetJson(midiFile),
+      holeEdits: NO_HOLE_EDITS,
+      selectedHoles: NO_SELECTION,
       musicBoxSvgFormatOptions: fitFormatToSong(
         midiFile, state.musicBoxProfile, state.musicBoxSvgFormatOptions, state.trackSelection),
     }));
@@ -430,8 +584,15 @@ export default class MusicBoxSheetGenerator extends React.Component<
     if (!this.state.midiFile) {
       return;
     }
+    await this.player.play(this.buildPianoSequence());
+  }
 
-    const sequence = buildGeneratedMusicBoxSequence(
+  /** The notes punched in the strip (without the holes deleted by hand), for the piano. */
+  private buildPianoSequence(): IGeneratedMusicBoxEvent[] {
+    if (!this.state.midiFile) {
+      return [];
+    }
+    return buildGeneratedMusicBoxSequence(
       this.state.midiFile,
       this.state.musicBoxProfile,
       {
@@ -439,10 +600,9 @@ export default class MusicBoxSheetGenerator extends React.Component<
           this.state.musicBoxSvgFormatOptions.transposeOutOfRangeNotes,
         includePercussion: this.state.musicBoxSvgFormatOptions.includePercussion,
         trackSelection: this.state.trackSelection,
+        deletedNoteIds: this.state.holeEdits.deleted,
       }
     );
-
-    await this.player.play(sequence);
   }
 
   private toggleDebugMessage(): void {
@@ -450,24 +610,57 @@ export default class MusicBoxSheetGenerator extends React.Component<
   }
 }
 
+type LayoutInputs = [MidiFile, IMusicBoxProfile, IMusicBoxSvgFormatOptions, TrackSelection, ReadonlySet<string>];
+
 /**
- * Sizes that fit the whole song on one strip. Without a song, or if it can't be laid out (e.g. it
- * has no playable notes), the options are kept and the preview shows the error.
+ * Sizes that fit the whole song (without the holes deleted by hand) on one strip. Without a song,
+ * or if it can't be laid out (e.g. it has no playable notes), the options are kept and the preview
+ * shows the error.
  */
 function fitFormatToSong(
   midiFile: MidiFile | undefined,
   profile: IMusicBoxProfile,
   format: IMusicBoxSvgFormatOptions,
-  trackSelection: TrackSelection
+  trackSelection: TrackSelection,
+  deletedNoteIds?: ReadonlySet<string>
 ): IMusicBoxSvgFormatOptions {
+  return tryFitFormatToSong(midiFile, profile, format, trackSelection, deletedNoteIds) || format;
+}
+
+function tryFitFormatToSong(
+  midiFile: MidiFile | undefined,
+  profile: IMusicBoxProfile,
+  format: IMusicBoxSvgFormatOptions,
+  trackSelection: TrackSelection,
+  deletedNoteIds?: ReadonlySet<string>
+): IMusicBoxSvgFormatOptions | null {
   if (!midiFile) {
-    return format;
+    return null;
   }
   try {
-    return fitSingleStrip(midiFile, profile, format, trackSelection);
+    return fitSingleStrip(midiFile, profile, format, trackSelection, deletedNoteIds);
   } catch {
-    return format;
+    return null;
   }
+}
+
+/**
+ * Sheet sizes after deleting or restoring holes (decision of the user): a sheet fitted to the song
+ * (its sizes are exactly the fitted ones) is fitted again; sizes typed by hand are kept.
+ */
+function refitAfterHoleEdits(state: IAppState, deletedNoteIds: ReadonlySet<string>): IMusicBoxSvgFormatOptions {
+  const { midiFile, musicBoxProfile, musicBoxSvgFormatOptions: format, trackSelection } = state;
+  const fitted = tryFitFormatToSong(midiFile, musicBoxProfile, format, trackSelection, state.holeEdits.deleted);
+  const wasFitted = !!fitted && fitted.pageWidthMm === format.pageWidthMm && fitted.pageHeightMm === format.pageHeightMm;
+  return wasFitted ? fitFormatToSong(midiFile, musicBoxProfile, format, trackSelection, deletedNoteIds) : format;
+}
+
+/** Whether keys pressed on this element edit text (so the editor's shortcuts must not act). */
+function isTextEntry(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  return ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable;
 }
 
 function downloadTextFile(content: string, fileName: string, mimeType: string) {

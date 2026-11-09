@@ -1,0 +1,60 @@
+.mb-holeEditor {
+    margin: 12px 0 4px;
+    padding: 10px 12px;
+    background: #f8f6ee;
+    border: 1px solid var(--mb-line, #d8d8c9);
+    border-radius: 3px;
+}
+
+.mb-holeEditor-hint {
+    margin: 0 0 8px;
+    color: var(--mb-muted, #727b70);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+/* Touch screens (no mouse to hover with, usually no keyboard) get the short explanation. */
+.mb-holeEditor-hintTouch {
+    display: none;
+}
+
+@media (hover: none) and (pointer: coarse) {
+    .mb-holeEditor-hintPointer {
+        display: none;
+    }
+
+    .mb-holeEditor-hintTouch {
+        display: inline;
+    }
+}
+
+.mb-holeEditor-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 16px;
+}
+
+.mb-holeEditor-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.mb-holeEditor-actions .bp3-button:not(.bp3-intent-danger):not(.bp3-minimal) {
+    color: var(--mb-ink, #263b37);
+    background: #f4f2e9;
+    box-shadow: inset 0 0 0 1px var(--mb-line, #d8d8c9);
+}
+
+.mb-holeEditor-actions .bp3-button:not(.bp3-intent-danger):not(.bp3-minimal):not(.bp3-disabled):hover {
+    background: #e9eee7;
+}
+
+.mb-holeEditor-status {
+    margin: 0;
+    color: var(--mb-muted, #727b70);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}

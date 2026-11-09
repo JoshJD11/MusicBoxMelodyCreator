@@ -1,7 +1,11 @@
 import fs from 'fs';
 import path from 'path';
 import * as tf from '@tensorflow/tfjs';
-import { analyzeAudio, detectNotes, loadBasicPitchModel } from './BasicPitchTranscriber';
+import { BasicPitch, outputToNotesPoly } from '@spotify/basic-pitch';
+import {
+    analyzeAudio, ANALYSIS_FRAMES_PER_WINDOW, detectNotes, frameAudioForModel, inferOnsetsWithinWindows,
+    loadBasicPitchModel, MODEL_WINDOW_SAMPLES, WINDOW_HOP_SAMPLES,
+} from './BasicPitchTranscriber';
 import {
     BASIC_PITCH_FRAME_SECONDS,
     BASIC_PITCH_SAMPLE_RATE,
@@ -132,6 +136,35 @@ describe('BasicPitchTranscriber (real Basic Pitch model)', () => {
         expect(again.frames.length).toBeGreaterThan(0);
     }, 120000);
 
+    it('gives the model exactly the same input and output as Basic Pitch itself', async () => {
+        // Basic Pitch's own pipeline (tf.signal.frame), on the CPU backend where it works.
+        const samples = melodyAudio();
+        const ownFrames: number[][] = [];
+        const ownOnsets: number[][] = [];
+        const framesPerWindow: number[] = [];
+        await new BasicPitch(loadBasicPitchModel()).evaluateModel(samples, (f, o) => {
+            ownFrames.push(...f);
+            ownOnsets.push(...o);
+            framesPerWindow.push(f.length);
+        }, () => undefined);
+        expect(analysis.frames).toEqual(ownFrames);
+        expect(analysis.onsets).toEqual(ownOnsets);
+        // Every window but the last (cut at the end of the audio) gives the same number of frames.
+        expect(framesPerWindow.length).toBe(2);
+        expect(framesPerWindow[0]).toBe(ANALYSIS_FRAMES_PER_WINDOW);
+        expect(ANALYSIS_FRAMES_PER_WINDOW).toBe(142);
+    }, 120000);
+
+    it('reads the same notes as Basic Pitch (onsets inferred) when no note starts on a window boundary', () => {
+        const s = DEFAULT_AUDIO_TRANSCRIPTION_SETTINGS;
+        const basicPitch = outputToNotesPoly(analysis.frames.map(r => r.slice()), analysis.onsets.map(r => r.slice()),
+            s.onsetThreshold, s.frameThreshold, s.minNoteLengthFrames, true, null, null, false, 11);
+        const ours = outputToNotesPoly(analysis.frames.map(r => r.slice()), inferOnsetsWithinWindows(analysis.onsets, analysis.frames),
+            s.onsetThreshold, s.frameThreshold, s.minNoteLengthFrames, false, null, null, false, 11);
+        expect(basicPitch.length).toBe(MELODY.length);
+        expect(ours).toEqual(basicPitch);
+    });
+
     it('loads the model once', async () => {
         const fetchMock = serveModelFiles();
         const first = await loadBasicPitchModel();
@@ -148,4 +181,102 @@ describe('BasicPitchTranscriber (real Basic Pitch model)', () => {
         await expect(fresh.loadBasicPitchModel()).resolves.toBeTruthy();
         expect(fetchMock).toHaveBeenCalled();
     }, 120000);
+});
+
+describe('frameAudioForModel', () => {
+    beforeAll(async () => {
+        await tf.setBackend('cpu');
+    });
+
+    /** What Basic Pitch's prepareData builds with tf.signal.frame. */
+    function basicPitchWindows(samples: Float32Array): Float32Array {
+        return tf.tidy(() => {
+            const padded = tf.concat1d([tf.zeros([30 * 256 / 2]), tf.tensor1d(samples)]);
+            return tf.signal.frame(padded, MODEL_WINDOW_SAMPLES, WINDOW_HOP_SAMPLES, true, 0).dataSync() as Float32Array;
+        });
+    }
+
+    it('cuts the audio into the same windows as Basic Pitch, for any length', () => {
+        expect([MODEL_WINDOW_SAMPLES, WINDOW_HOP_SAMPLES]).toEqual([43844, 36164]);
+        // Lengths: tiny, under one window, exactly one, a window and a sample, and 17 and 33 windows
+        // (the WebGL version of tf.signal.frame fails with 16·k + 1 windows).
+        const lengths = [1, 1000, 40004, 40005, 76168, 598714, 638681, 1188495];
+        lengths.forEach(length => {
+            const samples = new Float32Array(length);
+            for (let i = 0; i < length; i++) {
+                samples[i] = Math.sin(i * 0.37) + (i % 7) / 10;
+            }
+            const { windows, windowCount } = frameAudioForModel(samples);
+            const expected = basicPitchWindows(samples);
+            expect(windowCount).toBe(expected.length / MODEL_WINDOW_SAMPLES);
+            expect(windows.length).toBe(expected.length);
+            // Exactly equal (it is only copying).
+            let differences = 0;
+            for (let i = 0; i < windows.length; i++) {
+                if (windows[i] !== expected[i]) {
+                    differences++;
+                }
+            }
+            expect(differences).toBe(0);
+        });
+        expect(frameAudioForModel(new Float32Array(598714)).windowCount).toBe(17);
+        expect(frameAudioForModel(new Float32Array(1188495)).windowCount).toBe(33);
+    }, 120000);
+});
+
+describe('inferOnsetsWithinWindows (false notes at window boundaries)', () => {
+    const PITCH = 60;
+    const S = DEFAULT_AUDIO_TRANSCRIPTION_SETTINGS;
+
+    /**
+     * A note attacked at frame 10 (a clear onset), ringing and fading; at frame `jumpAt` its
+     * activation jumps up without any attack, like when a new window only sees the fading end of
+     * a song.
+     */
+    function ringingNote(jumpAt: number): IAudioAnalysis {
+        const n = 300;
+        const frames = Array.from({ length: n }, () => new Array<number>(88).fill(0.02));
+        const onsets = Array.from({ length: n }, () => new Array<number>(88).fill(0.05));
+        const k = PITCH - 21;
+        for (let f = 10; f < n; f++) {
+            if (f < 13) {
+                frames[f][k] = [0.2, 0.5, 0.8][f - 10];
+            } else if (f < jumpAt) {
+                frames[f][k] = 0.8 - 0.4 * (f - 13) / (jumpAt - 13);
+            } else {
+                frames[f][k] = 0.79 - 0.69 * (f - jumpAt) / (n - jumpAt);
+            }
+        }
+        onsets[11][k] = 0.9;
+        return { frames, onsets, durationSeconds: n * BASIC_PITCH_FRAME_SECONDS };
+    }
+
+    const basicPitchStarts = (a: IAudioAnalysis) => outputToNotesPoly(a.frames.map(r => r.slice()), a.onsets.map(r => r.slice()),
+        S.onsetThreshold, S.frameThreshold, S.minNoteLengthFrames, true, null, null, false, 11).map(e => e.startFrame).sort((x, y) => x - y);
+    const ourStarts = (a: IAudioAnalysis) => detectNotes(a, S).map(n => Math.round(n.startTimeSeconds / BASIC_PITCH_FRAME_SECONDS));
+
+    it('ignores a jump of a ringing note across a window boundary (Basic Pitch makes a false note of it)', () => {
+        const analysis = ringingNote(ANALYSIS_FRAMES_PER_WINDOW);
+        expect(basicPitchStarts(analysis)).toEqual([11, ANALYSIS_FRAMES_PER_WINDOW]);
+        expect(ourStarts(analysis).length).toBe(1);
+        expect(Math.abs(ourStarts(analysis)[0] - 11)).toBeLessThanOrEqual(1);
+    });
+
+    it('still infers an onset from the same jump inside a window, exactly like Basic Pitch', () => {
+        const analysis = ringingNote(100);
+        expect(basicPitchStarts(analysis)).toEqual([11, 100]);
+        const ours = inferOnsetsWithinWindows(analysis.onsets, analysis.frames);
+        const basicPitchLike = outputToNotesPoly(analysis.frames.map(r => r.slice()), ours,
+            S.onsetThreshold, S.frameThreshold, S.minNoteLengthFrames, false, null, null, false, 11);
+        expect(basicPitchLike.map(e => e.startFrame).sort((x, y) => x - y)).toEqual([11, 100]);
+        expect(detectNotes(analysis, S).length).toBe(2);
+    });
+
+    it('does not modify the analysis', () => {
+        const analysis = ringingNote(ANALYSIS_FRAMES_PER_WINDOW);
+        const copy = JSON.stringify(analysis);
+        inferOnsetsWithinWindows(analysis.onsets, analysis.frames);
+        detectNotes(analysis, S);
+        expect(JSON.stringify(analysis)).toBe(copy);
+    });
 });

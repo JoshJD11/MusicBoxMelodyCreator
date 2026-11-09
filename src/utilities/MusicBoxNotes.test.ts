@@ -251,3 +251,49 @@ describe('notes too close on the same line: the main voice wins', () => {
         });
     });
 });
+
+describe('holes deleted by hand', () => {
+    // Track 1 (tempo track) is empty; track 2: C4, E4, G4 at 0, 0.5, 1 s.
+    const midiFile = () => load([[endOfTrack()], melody([60, 64, 67])], 1);
+
+    it('identifies every hole by its track and note on event, whatever the profile', () => {
+        const file = midiFile();
+        const ids30 = punched(file, THIRTY).notes.map(n => n.id);
+        // Events of track 2: on, off, on, off, on, off, end of track.
+        expect(ids30).toEqual(['1:0', '1:2', '1:4']);
+        expect(punched(file, FIFTEEN).notes.map(n => n.id)).toEqual(ids30);
+        // A transposed note keeps the id of its MIDI note.
+        const transposed = punched(load([melody([36, 60])]), THIRTY).notes;
+        expect(transposed.map(n => [n.id, n.note, n.originalNote])).toEqual([['0:0', 48, 36], ['0:2', 60, 60]]);
+    });
+
+    it('removes exactly the deleted holes and counts them; the others do not change', () => {
+        const file = midiFile();
+        const all = punched(file).notes;
+        const result = extractMusicBoxNotes(file, THIRTY, { transposeOutOfRangeNotes: true, deletedNoteIds: new Set(['1:2']) });
+        expect(result.notes).toEqual([all[0], all[2]]);
+        expect(result.deletedCount).toBe(1);
+        expect(punched(file).deletedCount).toBe(0);
+        // Ids of notes that are not punched (another track, unknown) change nothing.
+        const other = extractMusicBoxNotes(file, THIRTY, { transposeOutOfRangeNotes: true, deletedNoteIds: new Set(['0:5', 'x']) });
+        expect(other.notes).toEqual(all);
+        expect(other.deletedCount).toBe(0);
+    });
+
+    it('never brings back a note that was skipped for being too close to the deleted one', () => {
+        // 0.0 s soft, 0.1 s loud: the loud one is punched, the soft one skipped (too close).
+        const file = load([[noteOn(0, 60, 50), noteOff(0, 60), noteOn(96, 60, 100), noteOff(0, 60), endOfTrack()]]);
+        const [loud] = punched(file).notes;
+        expect(loud.velocity).toBe(100);
+        const result = extractMusicBoxNotes(file, THIRTY, { transposeOutOfRangeNotes: true, deletedNoteIds: new Set([loud.id]) });
+        expect(result.notes).toEqual([]);
+        expect(result.tooCloseCount).toBe(1);
+        expect(result.deletedCount).toBe(1);
+    });
+
+    it('the piano does not play the deleted holes', () => {
+        const file = midiFile();
+        const piano = buildGeneratedMusicBoxSequence(file, THIRTY, { transposeOutOfRangeNotes: true, deletedNoteIds: new Set(['1:0', '1:4']) });
+        expect(piano.map(e => [e.note, e.startTimeSeconds])).toEqual([[64, 0.5]]);
+    });
+});

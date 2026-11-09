@@ -8,6 +8,11 @@ MIDI file. Automatic detection can miss notes or add false ones, so a MIDI file 
 if you only have audio, a melody played on piano or a similar single instrument gives the best result.
 Sliders let you adjust the detection sensitivity after loading an MP3.
 
+Holes can be deleted by hand in the preview (e.g. false notes of an MP3, or notes you don't want):
+click or tap a hole to select it (it is ringed in green under the mouse), then press Delete,
+Backspace or the Delete button. Undo (also Ctrl+Z / ⌘Z) and Restore all bring them back. The
+piano and the downloaded DXF never contain the deleted holes.
+
 **Try it online:** https://musicboxmelodycreator.vercel.app
 
 This project also includes a simple MIDI File parser based on the information available at https://www.midi.org/ and http://www.somascape.org/midi/tech/mfile.html. The parser by itself can be used to analyze MIDI files, convert MIDI to JSON, convert delta times to absolute seconds, etc.
@@ -104,3 +109,11 @@ Changes made by [JoshJD11] on [2026-11-09]:
   punched holes against the original MIDI files of the samples. The silence before the first note of
   an MP3 is removed, so the strip doesn't start with blank paper.
 - The buttons above the preview are no longer cut off on phones.
+- Holes can be selected in the preview and deleted (button, Backspace or Delete key), with Undo
+  (button, Ctrl+Z / ⌘Z) and Restore all. Deleting a hole never moves the others; the piano, also while
+  playing, and the DXF follow at once. A sheet fitted to the song is fitted again if its last notes
+  are deleted.
+- MP3: no more false notes after the end of the song (Basic Pitch analyses the audio in windows of
+  1.6 s, and a note still ringing at the start of a window looked like a new attack).
+- MP3: audio of certain lengths (26-28 s, 52-54 s, 79-80 s... about one in 16) failed with "Failed to
+  compile fragment shader" (a TensorFlow.js bug); the audio is now cut into windows without it.

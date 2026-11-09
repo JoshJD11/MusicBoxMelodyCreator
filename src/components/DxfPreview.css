@@ -30,3 +30,34 @@
     border: 1px solid var(--mb-line, #d8d8c9);
     border-radius: 4px;
 }
+
+/*
+ * Holes that can be deleted: ringed in green under the mouse, filled and ringed when selected. Only
+ * on screen (not part of the DXF). The highlights never take the clicks: the sheet finds the nearest
+ * hole itself.
+ */
+.mb-sheetSvg-editable {
+    /* Quick taps (no double-tap zoom delay); pinch zoom still works. */
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.mb-holeHighlights {
+    pointer-events: none;
+}
+
+.mb-hole-hover {
+    fill: rgba(30, 158, 84, 0.14);
+    stroke: var(--mb-holeSelect, #1e9e54);
+    stroke-width: 0.5;
+}
+
+.mb-hole-selectedFill {
+    fill: var(--mb-holeSelect, #1e9e54);
+}
+
+.mb-hole-ring {
+    fill: none;
+    stroke: var(--mb-holeSelect, #1e9e54);
+    stroke-width: 0.45;
+}

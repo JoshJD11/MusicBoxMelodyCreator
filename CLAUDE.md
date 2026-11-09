@@ -26,7 +26,9 @@ una nota no suene. Por eso:
 - La vista previa se dibuja **leyendo los mismos documentos DXF que se descargan** (`parseDxf`). Se
   calculan una sola vez (`getLayout` en `MusicBoxSheetGenerator`). Lo que se ve es el archivo.
   Comprobado: es idéntica píxel a píxel a la vista previa anterior, que se dibujaba desde la geometría.
-- El piano reproduce **exactamente** las notas perforadas (`extractMusicBoxNotes`). No tiene lógica propia.
+  Lo único que se añade encima son los resaltados verdes de los agujeros (bajo el ratón / seleccionados).
+- El piano reproduce **exactamente** las notas perforadas (`extractMusicBoxNotes`, sin los agujeros
+  borrados a mano). No tiene lógica propia.
 - `$INSUNITS=4` (mm) y las capas `CUT`/`HOLES` del DXF se mantienen a propósito: el flujo de Silhouette
   funciona así.
 - El usuario quiere que, antes de cada cambio, se le explique **cómo se hacía antes y cómo se hará
@@ -79,7 +81,8 @@ archivo .mid
   └─ model/MidiFile.ts          parser SMF: eventos con absTicks → mapa de tempos → absTimeSeconds
       └─ utilities/MusicBoxNotes.ts   pistas (auto/todas/una), NoteOn vel>0, sin percusión (canal 10),
          │                            transposición a la octava más cercana, descarta notas a ≤ minNoteGap
-         │                            del agujero anterior en la misma línea
+         │                            del agujero anterior en la misma línea; al final quita los
+         │                            agujeros borrados a mano (deletedNoteIds)
          ├─ utilities/MusicBoxMidi.ts → PianoPlayer.ts (Web Audio): vista previa sonora
          └─ utilities/MusicBoxLayout.ts  paginateNotes → buildStripGeometry → buildSheets (mm, y hacia abajo)
              └─ utilities/SheetDrawing.ts    drawSheet: hoja con la orientación elegida (horizontal / vertical)
@@ -140,7 +143,31 @@ archivo .mid
   tiene scroll propio, para llegar rápido al final de la página. En horizontal no hay límite. El `<svg>`
   no recorta el trazo de las líneas que caen en el borde de la hoja (solo afecta a la pantalla). Cada hoja
   se centra en el cuadro (las más anchas empiezan a la izquierda para poder desplazarse). No se dibuja
-  nada que no esté en el DXF.
+  nada que no esté en el DXF, salvo los resaltados de los agujeros (ver "Borrar agujeros").
+- **Borrar agujeros** (pedido por el usuario; `HoleEdits.ts`, `HoleEditToolbar.tsx`, `DxfPreview.tsx`):
+  - Cada agujero tiene un `id` = pista + índice del evento Note On en esa pista (`musicBoxNoteId`): no
+    depende del perfil ni del layout. `layout.holeNotes[hoja][j]` es la nota del círculo j de esa hoja, en
+    el orden de las entidades CIRCLE del DXF (verificado por posición en `expectPhysicallyValid` para
+    todos los samples, perfiles y formatos). La vista previa busca el agujero **más cercano** al puntero
+    (margen 1.2 mm con ratón, 2.5 mm con el dedo).
+  - Selección: un clic/toque **alterna** el agujero (varios a la vez; decisión del usuario, igual en
+    teléfono). Hover: anillo verde y cursor de mano (no en pantallas táctiles). Seleccionado: relleno y
+    anillo verdes. Borrar: botón, Backspace o Supr. Esc / "Unselect" quitan la selección. Deshacer:
+    botón o Ctrl+Z / ⌘Z, un paso cada vez; "Restore all" también es un paso que se puede deshacer. No hay
+    rehacer. Las teclas no actúan mientras se escribe en un campo (ahí editan el texto).
+  - Lo borrado se quita **al final** de `extractMusicBoxNotes`: borrar un agujero nunca hace aparecer ni
+    mover otro (una nota descartada por estar demasiado cerca sigue descartada). Solo pueden moverse los
+    cortes entre tiras (se ponen entre notas). Si se borran todos: error que explica Undo / Restore all, y
+    la barra sigue visible.
+  - Lo borrado pertenece al archivo cargado: se conserva al cambiar perfil, papel, pista o layout; se
+    olvida al cargar otro archivo (o el mismo) y al volver a detectar las notas de un MP3 (barras), que lo
+    avisa en su panel. El MIDI JSON no cambia.
+  - Tamaño de la hoja (decisión del usuario): si estaba ajustada a la canción (sus tamaños son los de
+    `fitSingleStrip` antes del cambio), se reajusta (borrar las últimas notas la acorta); los tamaños
+    escritos a mano se respetan. `fitSingleStrip` y todos los reajustes descuentan lo borrado.
+  - Piano (decisión del usuario): si está sonando o en pausa **sigue desde donde va** con las notas nuevas
+    (`PianoPlayer.updateSequence`: cancela las notas aún no empezadas y las vuelve a programar desde la
+    nueva secuencia; las que ya sonaron siguen). Los demás cambios de ajustes siguen deteniéndolo.
 - **Audio** (`PianoPlayer.ts`): ganancia 1.0 → limitador (−12 dB, 20:1, ataque 1 ms) → altavoces. Está
   medido con render offline de los samples: +13 a +16 dB respecto a la versión original y pico ≤ 0.82,
   sin saturación. Si cambias la cadena, vuelve a medir.
@@ -172,6 +199,25 @@ archivo .mid
     segundos se quitaron. Desplazamiento rígido: no cambia distancias. Los MIDI no se recortan (un
     silencio inicial es parte de la música). Con el sample, la tira del MP3 mide 200.93 mm frente a
     201.10 mm del MIDI (antes del recorte, 211.14 mm).
+  - **Notas falsas al final, corregidas** (`inferOnsetsWithinWindows`): Basic Pitch analiza ventanas de
+    1.64 s (142 frames de salida cada una) y normaliza cada una por separado; en la última ventana, con
+    solo el final de la canción apagándose, la activación de las notas que siguen sonando salta y sus
+    "onsets inferidos" (diferencias de frames) las convertían en notas nuevas. Ahora las diferencias que
+    cruzan el borde entre dos ventanas no cuentan; todo lo demás (incluida la escala) es el cálculo de
+    Basic Pitch. El usuario pidió aplicarlo solo si el problema era recurrente: medido en un corpus de
+    48 audios (3 samples + 10 piezas de dominio público de Mutopia, con 4 timbres: piano de la app, piano
+    con reverberación, caja musical sinusoidal y órgano) y los últimos 100 s de 7 grabaciones reales de
+    piano de dominio público (Wikimedia Commons). Con los ajustes por defecto había agujeros falsos
+    después del final en 27 de 48 audios (1168 mm de papel de más en total; ~43 mm cada uno) y en 4 de
+    las 7 grabaciones; ahora queda 1 audio (13 mm, cola de reverberación). En los 6 ajustes probados las
+    notas quitadas están todas en un borde de ventana y ninguna es real; agujeros correctos iguales o
+    +1–2 (salvo uno menos con onset 0.8, una octava que coincidía por casualidad). `ode_to_joy.mp3`: 559
+    agujeros en vez de 561 y la tira 47 mm más corta (2358 mm).
+  - **Ventanas cortadas en JavaScript** (`frameAudioForModel`): `tf.signal.frame` (TFJS 3.21, WebGL)
+    genera un shader que no compila cuando hay 16·k + 1 ventanas (audio de 26–28 s, 52–54 s, 79–80 s…,
+    ~1 de cada 16 duraciones, en cualquier GPU y en SwiftShader): la web fallaba con "Failed to compile
+    fragment shader". Ahora se reemplaza `prepareData` de Basic Pitch; el test comprueba que las ventanas
+    y la salida del modelo son idénticas a las de Basic Pitch.
   - Barras (Blueprint `Slider`) solo con un MP3 cargado; se aplican al **soltar** (sin Apply) y
     recalculan el tamaño como un cambio de pista (sin tocar el borde). "Reset to defaults".
   - Límite de 6 min de audio (memoria en móviles: ~250 MB de pico a 6 min). Textos en la interfaz (pedidos
@@ -180,7 +226,9 @@ archivo .mid
   - `samples/ode_to_joy.mp3` es `ode_to_joy.mid` renderizado con el piano de la app (dominio público).
   - Tests: `BasicPitchTranscriber.test.ts` corre el **modelo real** (CPU, ~20 s) con tonos sintéticos;
     la prueba de extremo a extremo simula decodificación y modelo, pero usa la detección real de Basic
-    Pitch. En jsdom el prefijo de Blueprint es `undefined-` (no `bp3-`).
+    Pitch. En jsdom el prefijo de Blueprint es `undefined-` (no `bp3-`). Para re-medir con otras canciones:
+    renderizar MIDIs de dominio público (p. ej. Mutopia) con varios timbres → MP3 → volcar las
+    activaciones en Chrome y evaluar variantes offline (ver la memoria del proyecto).
 - **UI**: siempre en **una sola columna** (preferencia del usuario). La barra de botones de la vista
   previa se centra con márgenes automáticos: si no cabe (teléfono) empieza a la izquierda y se desplaza
   (con `align-items: center` el primer botón quedaba cortado e inalcanzable). `MusicBoxSheetGenerator.tsx` (componente raíz). Los editores de perfil y formato validan con

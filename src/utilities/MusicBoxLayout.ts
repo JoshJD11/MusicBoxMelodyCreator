@@ -89,6 +89,11 @@ export interface IMusicBoxLayout {
     sheets: ISheet[];
     /** The sheets as they are cut (with the configured orientation): what the DXF files contain. */
     drawings: ISheetDrawing[];
+    /**
+     * For every drawing, the note of each of its holes, in the order of its circles (which is also
+     * the order of the CIRCLE entities of its DXF file): lets the preview tell which note a hole is.
+     */
+    holeNotes: IMusicBoxNote[][];
     totalPaperLengthMm: number;
     messages: ILayoutMessage[];
 }
@@ -357,24 +362,37 @@ export function buildSheets(
     return sheets;
 }
 
-/** Computes everything needed to preview, play and export the strips for a MIDI file. */
+/**
+ * Computes everything needed to preview, play and export the strips for a MIDI file, without the
+ * holes deleted by hand (`deletedNoteIds`, see {@link INoteExtractionOptions.deletedNoteIds}).
+ */
 export function computeMusicBoxLayout(
     midiFile: MidiFile,
     profile: IMusicBoxProfile,
     format: IMusicBoxSvgFormatOptions,
-    trackSelection: TrackSelection = 'auto'
+    trackSelection: TrackSelection = 'auto',
+    deletedNoteIds?: ReadonlySet<string>
 ): IMusicBoxLayout {
     const extraction = extractMusicBoxNotes(midiFile, profile, {
         transposeOutOfRangeNotes: format.transposeOutOfRangeNotes,
         includePercussion: format.includePercussion,
         trackSelection,
+        deletedNoteIds,
     });
+
+    if (extraction.notes.length === 0 && extraction.deletedCount > 0) {
+        throw new Error('Every hole was deleted. Use Undo or Restore all to bring them back.');
+    }
 
     const pages = paginateNotes(extraction.notes, profile, format);
     const notePositions = getNoteLinePositions(profile);
     const strips = pages.map(page => buildStripGeometry(page, pages.length, profile, format, notePositions));
     const sheets = buildSheets(strips, profile, format);
     const drawings = sheets.map(sheet => drawSheet(sheet, format.stripOrientation));
+    // buildSheets keeps the order of the strips (one per page) and every strip keeps the order of
+    // its page's notes, through drawSheet and createDxf.
+    let nextPage = 0;
+    const holeNotes = sheets.map(sheet => sheet.strips.flatMap(() => pages[nextPage++].notes));
 
     const messages: ILayoutMessage[] = [];
     if (extraction.transposedCount > 0) {
@@ -403,6 +421,7 @@ export function computeMusicBoxLayout(
         pages,
         sheets,
         drawings,
+        holeNotes,
         totalPaperLengthMm: strips.reduce((total, strip) => total + strip.lengthMm, 0),
         messages,
     };
@@ -414,16 +433,18 @@ export function computeMusicBoxLayout(
  * - strip length: the song's length, rounded up to the next whole millimeter (plus the room that
  *   pagination reserves for a jigsaw tab, if enabled);
  * - sheet size across the strips: the paper width.
- * Every other option is kept.
+ * Every other option is kept. Holes deleted by hand (`deletedNoteIds`) are not counted.
  */
 export function fitSingleStrip(
     midiFile: MidiFile,
     profile: IMusicBoxProfile,
     format: IMusicBoxSvgFormatOptions,
-    trackSelection: TrackSelection = 'auto'
+    trackSelection: TrackSelection = 'auto',
+    deletedNoteIds?: ReadonlySet<string>
 ): IMusicBoxSvgFormatOptions {
     // Without a size limit, the whole song is one strip.
-    const unlimited = computeMusicBoxLayout(midiFile, profile, { ...format, pageWidthMm: 0, pageHeightMm: 0 }, trackSelection);
+    const unlimited = computeMusicBoxLayout(
+        midiFile, profile, { ...format, pageWidthMm: 0, pageHeightMm: 0 }, trackSelection, deletedNoteIds);
     const lengthMm = unlimited.totalPaperLengthMm + (format.jigsawJoiners ? JIGSAW_WIDTH_MM : 0);
     return {
         ...format,

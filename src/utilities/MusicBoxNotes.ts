@@ -23,10 +23,24 @@ export interface INoteExtractionOptions {
 
     /** Include notes of the percussion channel (MIDI channel 10). Defaults to `false`. */
     includePercussion?: boolean;
+
+    /**
+     * Holes deleted by hand ({@link IMusicBoxNote.id}). They are removed after every other step, so
+     * that deleting a hole never makes another one appear or move (e.g. a note that was skipped for
+     * being too close to it stays skipped).
+     */
+    deletedNoteIds?: ReadonlySet<string>;
 }
 
 /** A note that will be punched in the music box strip. */
 export interface IMusicBoxNote {
+    /**
+     * Identifies the MIDI note the hole comes from (its track and the index of its note on event in
+     * that track, see {@link musicBoxNoteId}). It doesn't depend on the profile or the layout, so it
+     * survives any change of the settings.
+     */
+    id: string;
+
     /** The note punched (after transposition). Always one of the profile's supported notes. */
     note: MidiNote;
 
@@ -67,6 +81,9 @@ export interface INoteExtractionResult {
 
     /** Percussion notes that were ignored. */
     percussionCount: number;
+
+    /** Holes deleted by hand (see {@link INoteExtractionOptions.deletedNoteIds}). */
+    deletedCount: number;
 }
 
 export interface ITrackSummary {
@@ -74,6 +91,11 @@ export interface ITrackSummary {
     name?: string;
     /** Number of notes in the track (excluding percussion, unless included). */
     noteCount: number;
+}
+
+/** The {@link IMusicBoxNote.id} of the note on event at `eventIndex` in the track `trackIndex`. */
+export function musicBoxNoteId(trackIndex: number, eventIndex: number): string {
+    return trackIndex + ':' + eventIndex;
 }
 
 /** Duration assumed for notes that never receive a note off. */
@@ -156,6 +178,7 @@ export function extractMusicBoxNotes(
         unsupportedCount: 0,
         tooCloseCount: 0,
         percussionCount: 0,
+        deletedCount: 0,
     };
 
     // 1. Collect note starts (with their durations) of the selected tracks.
@@ -164,13 +187,14 @@ export function extractMusicBoxNotes(
         // Pending note starts per channel/note, to find their note off (first in, first out).
         const pending = new Map<string, IMusicBoxNote[]>();
 
-        tracks[trackIndex].events.forEach(event => {
+        tracks[trackIndex].events.forEach((event, eventIndex) => {
             if (isNoteStart(event)) {
                 if (!includePercussion && event.channel === PERCUSSION_CHANNEL) {
                     result.percussionCount++;
                     return;
                 }
                 const note: IMusicBoxNote = {
+                    id: musicBoxNoteId(trackIndex, eventIndex),
                     note: event.note,
                     originalNote: event.note,
                     timeSeconds: event.absTimeSeconds,
@@ -252,7 +276,18 @@ export function extractMusicBoxNotes(
         kept.push(note);
     });
 
-    result.notes = kept.filter((note): note is IMusicBoxNote => note !== null);
+    // 4. Holes deleted by hand, last: nothing else changes because of them.
+    const deleted = options.deletedNoteIds;
+    result.notes = kept.filter((note): note is IMusicBoxNote => {
+        if (note === null) {
+            return false;
+        }
+        if (deleted && deleted.has(note.id)) {
+            result.deletedCount++;
+            return false;
+        }
+        return true;
+    });
     return result;
 }
 

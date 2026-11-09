@@ -23,9 +23,15 @@ const NOISE_DURATION_SECONDS = 0.018;
  * Notes are scheduled a little ahead of time in small batches, so that long songs don't
  * create thousands of audio nodes at once.
  */
+/** The audio sources of one note of the sequence, and when it starts in the audio clock. */
+interface IScheduledNote {
+    startTime: number;
+    sources: AudioScheduledSourceNode[];
+}
+
 export default class PianoPlayer {
     private audioContext: AudioContext | null = null;
-    private sources: AudioScheduledSourceNode[] = [];
+    private scheduledNotes: IScheduledNote[] = [];
     private output: IOutputChain | null = null;
     private noiseBuffer: AudioBuffer | null = null;
 
@@ -76,16 +82,10 @@ export default class PianoPlayer {
 
             const output = createOutputChain(context);
 
-            const playbackDuration = sequence.reduce(
-                (duration, event) =>
-                    Math.max(duration, event.startTimeSeconds + getPianoReleaseSeconds(event.note) + 0.05),
-                0
-            );
-
             this.pendingEvents = sequence;
             this.pendingIndex = 0;
             this.startTime = context.currentTime + PLAYBACK_LOOKAHEAD_SECONDS;
-            this.endTime = this.startTime + playbackDuration;
+            this.endTime = this.startTime + getPlaybackDuration(sequence);
             this.output = output;
             this.noiseBuffer = createPianoNoiseBuffer(context);
 
@@ -124,6 +124,45 @@ export default class PianoPlayer {
             this.scheduleCompletion();
             this.setState('playing');
         });
+    }
+
+    /**
+     * Replaces the notes of the song that is playing or paused, without moving the playback
+     * position (e.g. after deleting holes): the notes that have already started keep sounding, and
+     * the following ones are played from the new sequence. Does nothing when stopped.
+     */
+    public updateSequence(sequence: IGeneratedMusicBoxEvent[]): void {
+        const context = this.audioContext;
+        if (this.state === 'stopped' || !context || !this.output) {
+            return;
+        }
+        // While paused the audio clock is stopped, so this is the paused position.
+        const now = context.currentTime;
+        const hasStarted = (startTime: number) => startTime <= now;
+
+        // The notes scheduled ahead of time that have not started yet are cancelled...
+        this.scheduledNotes = this.scheduledNotes.filter(note => {
+            if (hasStarted(note.startTime)) {
+                return true;
+            }
+            stopNoteSources(note.sources);
+            return false;
+        });
+
+        // ...and every note that has not started yet comes from the new sequence.
+        this.pendingEvents = sequence;
+        this.pendingIndex = 0;
+        while (this.pendingIndex < sequence.length && hasStarted(this.startTime + sequence[this.pendingIndex].startTimeSeconds)) {
+            this.pendingIndex++;
+        }
+        this.endTime = Math.max(now, this.startTime + getPlaybackDuration(sequence));
+
+        // When paused (or while pausing or resuming), resume() schedules the notes and the end.
+        if (this.state === 'playing' && !this.busy) {
+            this.clearTimers();
+            this.scheduleEvents();
+            this.scheduleCompletion();
+        }
     }
 
     /** Stops playback immediately. */
@@ -175,14 +214,11 @@ export default class PianoPlayer {
             this.pendingEvents[this.pendingIndex].startTimeSeconds <= scheduleUntil
         ) {
             const event = this.pendingEvents[this.pendingIndex];
-            this.sources.push(...createPianoNote(
-                context,
-                this.output.input,
-                event.note,
-                this.startTime + event.startTimeSeconds,
-                event.velocity,
-                this.noiseBuffer
-            ));
+            const startTime = this.startTime + event.startTimeSeconds;
+            this.scheduledNotes.push({
+                startTime,
+                sources: createPianoNote(context, this.output.input, event.note, startTime, event.velocity, this.noiseBuffer),
+            });
             this.pendingIndex++;
         }
 
@@ -217,15 +253,8 @@ export default class PianoPlayer {
     private stopSources(): void {
         this.clearTimers();
 
-        this.sources.forEach((source) => {
-            try {
-                source.stop();
-            } catch {
-                // A source may already have finished naturally.
-            }
-            source.disconnect();
-        });
-        this.sources = [];
+        this.scheduledNotes.forEach(note => stopNoteSources(note.sources));
+        this.scheduledNotes = [];
 
         if (this.output) {
             this.output.disconnect();
@@ -236,6 +265,25 @@ export default class PianoPlayer {
         this.pendingIndex = 0;
         this.noiseBuffer = null;
     }
+}
+
+function stopNoteSources(sources: AudioScheduledSourceNode[]): void {
+    sources.forEach((source) => {
+        try {
+            source.stop();
+        } catch {
+            // A source may already have finished naturally.
+        }
+        source.disconnect();
+    });
+}
+
+/** Time from the start of the sequence until its last note has finished ringing. */
+function getPlaybackDuration(sequence: IGeneratedMusicBoxEvent[]): number {
+    return sequence.reduce(
+        (duration, event) => Math.max(duration, event.startTimeSeconds + getPianoReleaseSeconds(event.note) + 0.05),
+        0
+    );
 }
 
 function getAudioContextConstructor(): (new () => AudioContext) | undefined {

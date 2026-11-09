@@ -32,6 +32,16 @@
     line-height: 1.45;
 }
 
+.mb-audioTranscription-deleted {
+    margin: -4px 0 10px;
+    padding: 6px 8px;
+    color: #7a4b0f;
+    background: rgba(217, 130, 43, 0.12);
+    border-radius: 3px;
+    font-size: 12px;
+    line-height: 1.45;
+}
+
 .mb-audioSlider {
     margin-bottom: 12px;
 }
