@@ -2,6 +2,8 @@ This project turns MIDI files into music box paper strips. It produces DXF files
 automatically (e.g. with a Silhouette Cameo in Silhouette Studio) for 15 and 30 note paper-strip
 music boxes. Paper width, notes supported by the box, hole size, speed and sheet size are configurable.
 
+**Try it online:** https://musicboxmelodycreator.vercel.app
+
 This project also includes a simple MIDI File parser based on the information available at https://www.midi.org/ and http://www.somascape.org/midi/tech/mfile.html. The parser by itself can be used to analyze MIDI files, convert MIDI to JSON, convert delta times to absolute seconds, etc.
 
 ## Available Scripts
@@ -17,9 +19,21 @@ dependencies with `npm ci`, then:
 | `npm run typecheck` | Type-checks the code with TypeScript |
 | `npm run build` | Type-checks and builds the app for production to the `dist` folder |
 | `npm run preview` | Serves the production build locally |
-| `npm run deploy` | Lints, tests, builds and publishes `dist` to GitHub Pages |
+| `npm run deploy` | Lints, tests, builds and publishes `dist` to GitHub Pages (not used by the live site) |
 
 The build uses relative paths, so `dist` can be served from any folder.
+
+## Deployment
+
+The live site is hosted on Vercel and is rebuilt automatically from the `main` branch: every commit
+that lands on `main` is published. Other branches and pull requests only get preview deployments,
+never the live site.
+
+## Contributing
+
+Contributions are welcome through pull requests. `main` is protected: changes reach it only through a
+pull request approved by the maintainer, so fork the repository, push to a branch of your fork and open
+a pull request against `main`. Please run `npm run lint` and `npm test` before opening it.
 
 ## Desktop shortcut
 

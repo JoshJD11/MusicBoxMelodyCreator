@@ -58,7 +58,14 @@ No copies `node_modules` entre Windows y Linux (los binarios nativos son distint
 | `npm run lint` / `npm run typecheck` | ESLint 10 (typescript-eslint, react-hooks) / `tsc --noEmit` |
 | `npm run build` | Type-check y build de producción en `dist/` (rutas relativas, `base: './'`) |
 | `npm run preview` | Sirve `dist/`. Reinícialo si vuelves a hacer build (cachea los archivos). |
-| `npm run deploy` | lint + cobertura + build y publica `dist/` en GitHub Pages |
+| `npm run deploy` | lint + cobertura + build y publica `dist/` en GitHub Pages (no se usa: la web está en Vercel) |
+
+**Web publicada**: https://musicboxmelodycreator.vercel.app (Vercel, plan Hobby, proyecto
+`musicboxmelodycreator`, preset Vite por defecto, sin `vercel.json` ni variables de entorno). Vercel
+reconstruye y publica **cada commit que llega a `main`**: hacer push a `main` es publicar para todo el
+mundo. Las demás ramas y los pull requests solo generan vistas previas con su propia URL.
+`main` está protegida en GitHub (ruleset): los colaboradores solo llegan a `main` con un pull request
+aprobado por el dueño (`.github/CODEOWNERS`); el dueño puede saltarse la regla y hacer push directo.
 
 ## Cómo funciona (flujo de datos)
 

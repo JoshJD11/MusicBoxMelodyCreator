@@ -328,6 +328,8 @@ export default class MusicBoxSheetGenerator extends React.Component<
           <div>
             Code: <a href="https://github.com/JoshJD11/MusicBoxMelodyCreator">GitHub</a>
             {" "}(based on <a href="https://github.com/SabinT/musicbox-svg">musicbox-svg</a>)
+            <span className="mb-footerDivider">/</span>License:{" "}
+            <a href="https://github.com/JoshJD11/MusicBoxMelodyCreator/blob/main/LICENSE">GPLv3</a>
             <span className="mb-footerDivider">/</span>Credits: {credits}
           </div>
         </footer>
