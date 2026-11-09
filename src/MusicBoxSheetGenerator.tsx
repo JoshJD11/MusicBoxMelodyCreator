@@ -24,10 +24,15 @@ import { computeMusicBoxLayout, fitSingleStrip } from "./utilities/MusicBoxLayou
 import { createDxf } from "./utilities/DxfExporter";
 import PianoPlayer, { PlaybackState } from "./utilities/PianoPlayer";
 
-const CREDITS = [
+const CREDITS: { asset: string; by: string; url?: string }[] = [
   {
     asset: "Midi Icon",
     by: "Midi Synthesizer by Iconic from the Noun Project",
+  },
+  {
+    asset: "MP3 to MIDI",
+    by: "Basic Pitch by Spotify (Apache License 2.0)",
+    url: "https://github.com/spotify/basic-pitch-ts",
   },
 ];
 
@@ -134,7 +139,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
       return (
         <div key={i}>
           <span>{x.asset}: </span>
-          <span>{x.by}</span>
+          <span>{x.url ? <a href={x.url}>{x.by}</a> : x.by}</span>
         </div>
       );
     });
@@ -148,6 +153,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
           onFileLoaded={(filename, midiFile) =>
             this.onMidiDataLoaded(filename, midiFile)
           }
+          onFileReconverted={(midiFile) => this.onMidiDataReconverted(midiFile)}
           trackSelection={this.state.trackSelection}
           includePercussion={
             !!this.state.musicBoxSvgFormatOptions.includePercussion
@@ -235,7 +241,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
               // Every settings panel stays mounted (hidden), so that unapplied edits survive a tab switch.
               renderActiveTabPanelOnly={false}
             >
-              <Tab id="file-picker-tab" title="MIDI File" panel={filePicker} />
+              <Tab id="file-picker-tab" title="MIDI / MP3 File" panel={filePicker} />
               <Tab
                 id="paper-settings-tab"
                 title="Paper/Music Box Settings"
@@ -310,14 +316,14 @@ export default class MusicBoxSheetGenerator extends React.Component<
               <div className="mb-emptyContent">
                 <p className="mb-eyebrow">YOUR NEXT MELODY</p>
                 <h2>A little tune,<br />made tangible.</h2>
-                <p className="mb-emptyCopy">Load a MIDI file to turn its notes into a music box paper strip.</p>
+                <p className="mb-emptyCopy">Load a MIDI file to turn its notes into a music box paper strip. MP3 files also work (experimental), but a MIDI file is preferable.</p>
                 <div className="mb-scoreRule" aria-hidden="true">
                   <span className="mb-scoreNote mb-scoreNote-one" />
                   <span className="mb-scoreNote mb-scoreNote-two" />
                   <span className="mb-scoreNote mb-scoreNote-three" />
                   <span className="mb-scoreNote mb-scoreNote-four" />
                 </div>
-                <span className="mb-emptyHint">MIDI files only <i /> Drag and drop is supported</span>
+                <span className="mb-emptyHint">MIDI or MP3 (experimental) <i /> Drag and drop is supported</span>
               </div>
               <div className="mb-emptyIndex">01 <span>/</span> CREATE</div>
             </main>
@@ -363,6 +369,17 @@ export default class MusicBoxSheetGenerator extends React.Component<
     }));
   }
 
+  /** The notes of the loaded MP3 were detected again with other settings: other notes, other length. */
+  private onMidiDataReconverted(midiFile: MidiFile) {
+    this.player.stop();
+    this.setState((state) => ({
+      midiFile,
+      midiJson: MidiJsonConverter.GetJson(midiFile),
+      musicBoxSvgFormatOptions: fitFormatToSong(
+        midiFile, state.musicBoxProfile, state.musicBoxSvgFormatOptions, state.trackSelection),
+    }));
+  }
+
   private downloadDxfs() {
     const layout = this.getLayout();
     const dxfs = layout && layout.dxfs;
@@ -373,7 +390,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
 
     const sourceFileName = this.state.fileName || "musicBox";
     const baseFileName = sourceFileName
-      .replace(/\.(midi|mid)$/i, "")
+      .replace(/\.(midi|mid|mp3)$/i, "")
       .replace(/[<>:"/\\|?*]/g, "_");
 
     // Exactly the documents drawn in the preview.

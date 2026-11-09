@@ -1,0 +1,89 @@
+.mb-audioNotice {
+    margin: 12px 0;
+    text-align: left;
+}
+
+.mb-audioNotice p {
+    margin-bottom: 6px;
+    line-height: 1.5;
+}
+
+.mb-audioNotice p:last-child {
+    margin-bottom: 0;
+}
+
+.mb-audioTranscription {
+    margin: 4px 0 12px;
+}
+
+.mb-audioTranscription h5 {
+    margin: 14px 0 4px;
+}
+
+.mb-audioTranscription-summary {
+    margin: 0 0 10px;
+    line-height: 1.5;
+}
+
+.mb-audioTranscription-trimmed {
+    margin: -4px 0 10px;
+    color: var(--mb-muted, #727b70);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.mb-audioSlider {
+    margin-bottom: 12px;
+}
+
+.mb-audioSlider-heading {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 4px 12px;
+    font-weight: 600;
+}
+
+.mb-audioSlider-value {
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Room for the handle, centered on the ends of the slider, so that it never overflows the card. */
+.mb-audioSlider-track {
+    padding: 6px 10px 0;
+}
+
+.mb-audioSlider-track .bp3-slider {
+    min-width: 0;
+    height: 24px;
+}
+
+.mb-audioSlider-range {
+    display: flex;
+    justify-content: space-between;
+    margin: 0 0 4px;
+    color: var(--mb-muted, #727b70);
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+.mb-audioSlider-hint {
+    margin: 0;
+    color: var(--mb-muted, #727b70);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.mb-audioProgress {
+    margin: 14px 0 4px;
+}
+
+.mb-audioProgress p {
+    margin: 0 0 8px;
+    line-height: 1.5;
+}
+
+.mb-audioProgress .bp3-progress-bar {
+    margin-bottom: 10px;
+}

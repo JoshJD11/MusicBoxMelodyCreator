@@ -21,6 +21,8 @@
   },
   "dependencies": {
     "@blueprintjs/core": "^3.24.0",
+    "@spotify/basic-pitch": "1.0.1",
+    "@tensorflow/tfjs": "3.21.0",
     "react": "^16.14.0",
     "react-dom": "^16.14.0"
   },

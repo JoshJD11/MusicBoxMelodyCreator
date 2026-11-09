@@ -148,7 +148,9 @@
 .mb-previewActions { display: flex; width: 100%; flex-direction: column; align-items: center; gap: 12px; margin-bottom: 18px; overflow-x: auto; }
 .mb-previewActions > .bp3-collapse { width: 100%; }
 .mb-unappliedNotice { width: 100%; }
-.mb-previewActions .bp3-button-group { display: inline-flex; min-width: max-content; }
+/* Auto margins center the buttons when they fit; when they don't, they start at the left edge and the
+   bar scrolls (align-items: center alone pushed the first buttons out of reach on phones). */
+.mb-previewActions .bp3-button-group { display: inline-flex; min-width: max-content; margin-right: auto; margin-left: auto; }
 .mb-previewActions .bp3-button { color: var(--mb-ink); background: #f4f2e9; box-shadow: none; }
 .mb-previewActions .bp3-button:hover { background: #e9eee7; }
 .mb-debugMessage { max-height: 320px; overflow: auto; white-space: pre; }

@@ -2,6 +2,12 @@ This project turns MIDI files into music box paper strips. It produces DXF files
 automatically (e.g. with a Silhouette Cameo in Silhouette Studio) for 15 and 30 note paper-strip
 music boxes. Paper width, notes supported by the box, hole size, speed and sheet size are configurable.
 
+MP3 files are also accepted (**experimental**): their notes are detected in the browser with
+Spotify's [Basic Pitch](https://github.com/spotify/basic-pitch-ts) and then follow the same path as a
+MIDI file. Automatic detection can miss notes or add false ones, so a MIDI file is always preferable;
+if you only have audio, a melody played on piano or a similar single instrument gives the best result.
+Sliders let you adjust the detection sensitivity after loading an MP3.
+
 **Try it online:** https://musicboxmelodycreator.vercel.app
 
 This project also includes a simple MIDI File parser based on the information available at https://www.midi.org/ and http://www.somascape.org/midi/tech/mfile.html. The parser by itself can be used to analyze MIDI files, convert MIDI to JSON, convert delta times to absolute seconds, etc.
@@ -50,12 +56,19 @@ Run it again if you move the project folder.
 
 `samples/happy_birthday.mid` and `samples/You are my sunshine.mid` come from the original project.
 `samples/ode_to_joy.mid` is an arrangement of Beethoven's "Ode to Joy" (public domain) made for the
-tests of this project.
+tests of this project. `samples/ode_to_joy.mp3` is that same arrangement rendered with the app's piano
+synthesizer, to try the (experimental) MP3 support and compare it with the MIDI file.
 
 ## License
 
 This project is licensed under the GNU General Public License v3.0 (GPLv3).
 See the [LICENSE](./LICENSE) file for the full text.
+
+### Third-party components
+
+MP3 to MIDI uses [Basic Pitch](https://github.com/spotify/basic-pitch-ts) (code and model) by Spotify
+and [TensorFlow.js](https://github.com/tensorflow/tfjs) by Google, both under the Apache License 2.0,
+which is compatible with the GPLv3.
 
 ### Modifications
 
@@ -84,3 +97,10 @@ Changes made by [JoshJD11] on [2026-11-08]:
 - Removed the experimental 3D disc view.
 - Desktop shortcut scripts for Windows and Linux.
 - Replaced a copyrighted sample MIDI with a public domain one.
+
+Changes made by [JoshJD11] on [2026-11-09]:
+- Experimental MP3 support: notes detected in the browser with Spotify's Basic Pitch (no server), with
+  sensitivity sliders, then laid out like a MIDI file. Default settings chosen by measuring the
+  punched holes against the original MIDI files of the samples. The silence before the first note of
+  an MP3 is removed, so the strip doesn't start with blank paper.
+- The buttons above the preview are no longer cut off on phones.

@@ -1,12 +1,24 @@
 import './MidiFilePicker.css';
 import * as React from 'react';
-import { Card, FileInput, NonIdealState, H4, Callout, Text, HTMLSelect, Label, Intent } from "@blueprintjs/core";
+import { Card, FileInput, NonIdealState, H4, Callout, Text, HTMLSelect, Label, Intent, ProgressBar } from "@blueprintjs/core";
 import MidiFile from '../model/MidiFile';
 import { MidiNote } from '../model/MidiConstants';
 import MidiNoteHistogram from './MidiNoteHistogram';
+import { AudioTranscriptionPanel, ExperimentalAudioNotice } from './AudioTranscriptionPanel';
 import { getTrackSummaries, resolveTrackIndices, TrackSelection } from '../utilities/MusicBoxNotes';
+import {
+    ACCEPTED_AUDIO_FILES,
+    analysisToMidiFile,
+    analyzeAudioFile,
+    DEFAULT_AUDIO_TRANSCRIPTION_SETTINGS,
+    IAudioAnalysis,
+    IAudioTranscriptionSettings,
+    isAudioFile,
+    TranscriptionCancelledError,
+    TranscriptionProgress,
+} from '../utilities/AudioTranscription';
 
-const ACCEPTED_FILES = '.mid,.midi,audio/midi,audio/x-midi';
+const ACCEPTED_FILES = '.mid,.midi,audio/midi,audio/x-midi,' + ACCEPTED_AUDIO_FILES;
 
 export interface IMidiFilePickerProps {
     fileName?: string;
@@ -15,11 +27,23 @@ export interface IMidiFilePickerProps {
     /** Called as soon as a file is picked, before it has been read and parsed. */
     onFileLoadStarted?(): void;
 
+    /** Called with the parsed MIDI file (for an MP3, the MIDI file made from its notes). */
     onFileLoaded?(fileName: string, midiFile: MidiFile): void;
+
+    /** Called when the notes of the loaded MP3 are detected again with other settings. */
+    onFileReconverted?(midiFile: MidiFile): void;
 
     trackSelection: TrackSelection;
     includePercussion: boolean;
     onTrackSelectionChange(selection: TrackSelection): void;
+}
+
+/** The loaded MP3: Basic Pitch's analysis is kept to detect the notes again with other settings. */
+interface IAudioSource {
+    analysis: IAudioAnalysis;
+    settings: IAudioTranscriptionSettings;
+    noteCount: number;
+    trimmedSeconds: number;
 }
 
 export interface IMidiFilePickerState {
@@ -27,15 +51,43 @@ export interface IMidiFilePickerState {
     midiFile?: MidiFile;
     /** Why the last file could not be loaded. */
     error?: string;
+    /** Set while an MP3 is being converted. */
+    conversion?: TranscriptionProgress;
+    audio?: IAudioSource;
 }
 
+function readFile(file: File): Promise<ArrayBuffer> {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+            if (reader.result instanceof ArrayBuffer) {
+                resolve(reader.result);
+            }
+        };
+        reader.onerror = () => reject(new Error('The file could not be read.'));
+        reader.readAsArrayBuffer(file);
+    });
+}
+
+const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
+
 export default class MidiFilePicker extends React.Component<IMidiFilePickerProps, IMidiFilePickerState>{
+    /** Incremented for every file picked: results of a previous file are ignored. */
+    private loadId = 0;
+    /** Incremented for every change of the MP3 settings: results of previous settings are ignored. */
+    private reconvertId = 0;
+
     constructor(props: IMidiFilePickerProps) {
         super(props);
         this.state = {
             fileName: props.fileName,
             midiFile: props.midiFile
         };
+    }
+
+    public componentWillUnmount() {
+        // Stops a running MP3 conversion and ignores its result.
+        this.loadId++;
     }
 
     private dropHandler(ev: React.DragEvent) {
@@ -59,22 +111,26 @@ export default class MidiFilePicker extends React.Component<IMidiFilePickerProps
     }
 
     private openFile(file: File) {
-        this.setState({ fileName: file.name, midiFile: undefined, error: undefined });
+        const loadId = ++this.loadId;
+        this.setState({ fileName: file.name, midiFile: undefined, error: undefined, conversion: undefined, audio: undefined });
         if (this.props.onFileLoadStarted) {
             this.props.onFileLoadStarted();
         }
 
-        const reader = new FileReader();
-        reader.onload = () => {
-            if (!(reader.result instanceof ArrayBuffer)) {
-                return;
-            }
+        if (isAudioFile(file)) {
+            this.openAudioFile(file, loadId);
+            return;
+        }
 
+        readFile(file).then(buffer => {
+            if (loadId !== this.loadId) {
+                return; // Another file was picked meanwhile.
+            }
             const midiFile = new MidiFile();
             try {
-                midiFile.loadFromBuffer(reader.result);
+                midiFile.loadFromBuffer(buffer);
             } catch (error) {
-                this.setState({ error: error instanceof Error ? error.message : String(error) });
+                this.setState({ error: errorMessage(error) });
                 return;
             }
 
@@ -82,12 +138,65 @@ export default class MidiFilePicker extends React.Component<IMidiFilePickerProps
             if (this.props.onFileLoaded) {
                 this.props.onFileLoaded(file.name, midiFile);
             }
-        };
-        reader.onerror = () => {
-            this.setState({ error: 'The file could not be read.' });
-        };
+        }, error => {
+            if (loadId === this.loadId) {
+                this.setState({ error: errorMessage(error) });
+            }
+        });
+    }
 
-        reader.readAsArrayBuffer(file);
+    /** MP3: Basic Pitch detects its notes, which are loaded as a MIDI file. */
+    private async openAudioFile(file: File, loadId: number) {
+        const isCurrent = () => loadId === this.loadId;
+        this.setState({ conversion: { stage: 'preparing' } });
+        try {
+            const data = await readFile(file);
+            const analysis = await analyzeAudioFile(
+                data,
+                conversion => {
+                    if (isCurrent()) {
+                        this.setState({ conversion });
+                    }
+                },
+                () => !isCurrent());
+            const settings = { ...DEFAULT_AUDIO_TRANSCRIPTION_SETTINGS };
+            const { midiFile, noteCount, trimmedSeconds } = await analysisToMidiFile(analysis, settings);
+            if (!isCurrent()) {
+                return;
+            }
+            this.setState({ midiFile, conversion: undefined, audio: { analysis, settings, noteCount, trimmedSeconds } });
+            if (this.props.onFileLoaded) {
+                this.props.onFileLoaded(file.name, midiFile);
+            }
+        } catch (error) {
+            if (isCurrent() && !(error instanceof TranscriptionCancelledError)) {
+                this.setState({ conversion: undefined, error: errorMessage(error) });
+            }
+        }
+    }
+
+    private async changeAudioSettings(settings: IAudioTranscriptionSettings) {
+        const audio = this.state.audio;
+        if (!audio) {
+            return;
+        }
+        const loadId = this.loadId;
+        const reconvertId = ++this.reconvertId;
+        this.setState({ audio: { ...audio, settings } });
+        try {
+            const { midiFile, noteCount, trimmedSeconds } = await analysisToMidiFile(audio.analysis, settings);
+            if (loadId !== this.loadId || reconvertId !== this.reconvertId) {
+                return;
+            }
+            this.setState({ midiFile, audio: { ...audio, settings, noteCount, trimmedSeconds } });
+            if (this.props.onFileReconverted) {
+                this.props.onFileReconverted(midiFile);
+            }
+        } catch (error) {
+            if (loadId === this.loadId && reconvertId === this.reconvertId) {
+                this.setState({ error: errorMessage(error) });
+            }
+        }
     }
 
     private dragOverHandler(ev: React.DragEvent) {
@@ -131,11 +240,26 @@ export default class MidiFilePicker extends React.Component<IMidiFilePickerProps
         );
     }
 
+    private renderConversion(conversion: TranscriptionProgress): JSX.Element {
+        const transcribing = conversion.stage === 'transcribing';
+        return (
+            <div className="mb-audioProgress" role="status">
+                <p>
+                    {transcribing
+                        ? `Detecting the notes of the audio… ${Math.round(conversion.fraction * 100)}%`
+                        : 'Preparing the audio and the note detection model…'}
+                </p>
+                <ProgressBar intent={Intent.PRIMARY} value={transcribing ? conversion.fraction : undefined} />
+                <ExperimentalAudioNotice />
+            </div>
+        );
+    }
+
     render() {
         const inputProps = { accept: ACCEPTED_FILES };
         const action = this.state.fileName
             ? <FileInput text={this.state.fileName} buttonText={'Replace'} inputProps={inputProps} onInputChange={(ev) => this.handleInputChange(ev)} />
-            : <FileInput text={'Select a MIDI file'} inputProps={inputProps} onInputChange={(ev) => this.handleInputChange(ev)} />;
+            : <FileInput text={'Select a MIDI or MP3 file'} inputProps={inputProps} onInputChange={(ev) => this.handleInputChange(ev)} />;
 
         let content: JSX.Element;
 
@@ -148,8 +272,16 @@ export default class MidiFilePicker extends React.Component<IMidiFilePickerProps
                         {this.state.error}
                     </Callout>
                 </>;
+        } else if (this.state.conversion) {
+            content =
+                <>
+                    <H4><Text ellipsize={true}>{this.state.fileName}</Text></H4>
+                    {action}
+                    {this.renderConversion(this.state.conversion)}
+                </>;
         } else if (this.state.midiFile) {
             const stats = this.state.midiFile.midiStats;
+            const audio = this.state.audio;
 
             const tempoInfo = stats.tempos.length
                 ? 'Tempo: ' + stats.tempos.map(x => parseFloat(x.toFixed(2))).join(', ') + ' bpm'
@@ -159,9 +291,19 @@ export default class MidiFilePicker extends React.Component<IMidiFilePickerProps
                 <>
                     <H4><Text ellipsize={true}>{this.state.fileName}</Text></H4>
                     {action}
+                    {audio && (
+                        <AudioTranscriptionPanel
+                            settings={audio.settings}
+                            noteCount={audio.noteCount}
+                            trimmedSeconds={audio.trimmedSeconds}
+                            onChange={(settings) => this.changeAudioSettings(settings)}
+                        />
+                    )}
                     {this.renderTrackSelector(this.state.midiFile)}
                     <Callout>
-                        <p>{tempoInfo}; last note at {stats.lastNoteOnEventInSeconds.toFixed(2)} seconds </p>
+                        {/* The tempo of a MIDI file made from audio means nothing. */}
+                        {!audio && <p>{tempoInfo}; last note at {stats.lastNoteOnEventInSeconds.toFixed(2)} seconds </p>}
+                        {audio && <p>Last note at {stats.lastNoteOnEventInSeconds.toFixed(2)} seconds</p>}
                         <p>High Note: {MidiNote[stats.highNote]}, Low Note: {MidiNote[stats.lowNote]} </p>
                     </Callout>
                     <MidiNoteHistogram width={320} height={80} midiStats={stats} />
@@ -170,7 +312,16 @@ export default class MidiFilePicker extends React.Component<IMidiFilePickerProps
             content = <NonIdealState
                 icon={'import'}
                 title='No file loaded'
-                description={'Drag and drop or select a file below...'}
+                description={
+                    <>
+                        <p>Drag and drop or select a file below...</p>
+                        <p className="mb-filePickerHint">
+                            MIDI files give exact results and are preferable. MP3 files are experimental: their
+                            notes are detected automatically, which works best with a melody played on piano or a
+                            similar single instrument.
+                        </p>
+                    </>
+                }
                 action={action}
             />
         }

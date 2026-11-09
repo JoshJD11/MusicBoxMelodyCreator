@@ -44,6 +44,10 @@ export default defineConfig({
         "src/utilities/DxfExporter.ts": { statements: 95, branches: 90, functions: 95, lines: 95 },
         "src/utilities/DxfReader.ts": { statements: 95, branches: 90, functions: 95, lines: 95 },
         "src/utilities/SheetDrawing.ts": { statements: 95, branches: 90, functions: 95, lines: 95 },
+        // MP3 to MIDI (experimental): what decides the notes that reach the strip.
+        "src/utilities/AudioTranscription.ts": { statements: 95, branches: 90, functions: 95, lines: 95 },
+        "src/utilities/AudioDecoding.ts": { statements: 95, branches: 90, functions: 95, lines: 95 },
+        "src/utilities/BasicPitchTranscriber.ts": { statements: 95, branches: 90, functions: 95, lines: 95 },
       },
     },
   },

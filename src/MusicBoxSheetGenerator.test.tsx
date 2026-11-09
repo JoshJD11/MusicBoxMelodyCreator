@@ -9,6 +9,74 @@ import { computeMusicBoxLayout, fitSingleStrip } from './utilities/MusicBoxLayou
 import { IMusicBoxSvgFormatOptions } from './model/IMusicBoxSvgFormatOptions';
 import { buildMidi, endOfTrack, noteOff, noteOn } from './testUtils/midiBuilder';
 import { createDxf } from './utilities/DxfExporter';
+import { detectNotes } from './utilities/BasicPitchTranscriber';
+import {
+    DEFAULT_AUDIO_TRANSCRIPTION_SETTINGS,
+    detectedNotesToMidi,
+    IAudioAnalysis,
+    IAudioTranscriptionSettings,
+    trimLeadingSilence,
+} from './utilities/AudioTranscription';
+
+/**
+ * MP3: the browser's decoding and the model's run are replaced (jsdom has neither Web Audio nor
+ * WebGL; the real model is tested in BasicPitchTranscriber.test.ts). Basic Pitch's note detection,
+ * the MIDI writer and everything after them are the real ones.
+ */
+const audioMocks = vi.hoisted(() => ({
+    decodeError: false,
+    analysis: null as unknown as IAudioAnalysis,
+    /** If set, the model's run waits for this promise. */
+    gate: null as Promise<void> | null,
+}));
+
+vi.mock('./utilities/AudioDecoding', () => ({
+    decodeAudioFile: async () => {
+        if (audioMocks.decodeError) {
+            throw new Error('The audio could not be decoded. Make sure the file is a valid MP3.');
+        }
+        return { samples: new Float32Array(16), durationSeconds: 3 };
+    },
+}));
+
+vi.mock('./utilities/BasicPitchTranscriber', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./utilities/BasicPitchTranscriber')>();
+    return {
+        ...actual,
+        loadBasicPitchModel: async () => undefined,
+        analyzeAudio: async (_samples: Float32Array, onProgress: (fraction: number) => void) => {
+            onProgress(0);
+            if (audioMocks.gate) {
+                await audioMocks.gate;
+            }
+            onProgress(1);
+            return audioMocks.analysis;
+        },
+    };
+});
+
+/** Basic Pitch activations with clear notes: [MIDI note, first frame, length in frames]. */
+function activations(notes: [number, number, number][], totalFrames = 260): IAudioAnalysis {
+    const frames = Array.from({ length: totalFrames }, () => new Array<number>(88).fill(0));
+    const onsets = Array.from({ length: totalFrames }, () => new Array<number>(88).fill(0));
+    notes.forEach(([pitch, start, length]) => {
+        onsets[start][pitch - 21] = 0.9;
+        for (let f = start; f < start + length; f++) {
+            frames[f][pitch - 21] = 0.8;
+        }
+    });
+    return { frames, onsets, durationSeconds: totalFrames * 256 / 22050 };
+}
+
+/**
+ * The MIDI file the app must make from the audio: Basic Pitch's notes, without the silence before
+ * the first one, written as MIDI.
+ */
+function expectedAudioMidi(analysis: IAudioAnalysis, settings: IAudioTranscriptionSettings): MidiFile {
+    const midiFile = new MidiFile();
+    midiFile.loadFromBuffer(detectedNotesToMidi(trimLeadingSilence(detectNotes(analysis, settings)).notes));
+    return midiFile;
+}
 
 const SAMPLE = 'You are my sunshine.mid';
 const DEFAULT_FORMAT: IMusicBoxSvgFormatOptions = {
@@ -250,7 +318,7 @@ describe('MusicBoxSheetGenerator (end to end)', () => {
         fireEvent.change(numericInput(within(getByRole('tabpanel')).getByText(/Max strip length/)), { target: { value: '100' } });
         fireEvent.click(within(getByRole('tabpanel')).getAllByText('Apply')[0]);
 
-        fireEvent.click(getByText('MIDI File'));
+        fireEvent.click(getByText('MIDI / MP3 File'));
         fireEvent.change(container.querySelector('select') as HTMLSelectElement, { target: { value: 'all' } });
         const fitted = fitSingleStrip(loadSampleMidi(), BuiltInProfiles['thirtyNote'], DEFAULT_FORMAT, 'all');
         fireEvent.click(getByText('Layout/Pagination'));
@@ -315,7 +383,7 @@ describe('MusicBoxSheetGenerator (end to end)', () => {
         fireEvent.click(mirror);
         expect(mirror.checked).toBe(true);
 
-        tab('MIDI File');
+        tab('MIDI / MP3 File');
         tab('Paper/Music Box Settings');
         tab('Layout/Pagination');
         expect((getByLabelText(/Mirror strips/) as HTMLInputElement).checked).toBe(true);
@@ -373,5 +441,166 @@ describe('MusicBoxSheetGenerator (end to end)', () => {
         fireEvent.change(numericInput(within(getByRole('tabpanel')).getByText(/Sheet width/)), { target: { value: '200' } });
         fireEvent.click(within(getByRole('tabpanel')).getAllByText('Apply')[0]);
         expect(download().disabled).toBe(false);
+    });
+});
+
+describe('MusicBoxSheetGenerator with MP3 files (experimental)', () => {
+    const createdBlobs: Blob[] = [];
+    const downloadedNames: string[] = [];
+    // C4 for 40 frames, E4 for 20 frames and a short G4 (8 frames): the default minimum note
+    // length (11 frames) drops the G4.
+    const ANALYSIS = activations([[60, 43, 40], [64, 86, 20], [67, 129, 8]]);
+
+    beforeEach(() => {
+        createdBlobs.length = 0;
+        downloadedNames.length = 0;
+        audioMocks.decodeError = false;
+        audioMocks.analysis = ANALYSIS;
+        audioMocks.gate = null;
+        Object.defineProperty(URL, 'createObjectURL', {
+            configurable: true,
+            value: vi.fn((blob: Blob) => {
+                createdBlobs.push(blob);
+                return 'blob:test-' + createdBlobs.length;
+            }),
+        });
+        Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+        vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+            downloadedNames.push(this.download);
+        });
+    });
+
+    afterEach(() => {
+        cleanup();
+        vi.restoreAllMocks();
+    });
+
+    const mp3 = (name = 'melody.mp3') => new File([new Uint8Array([0xFF, 0xFB, 0x90, 0x00])], name, { type: 'audio/mpeg' });
+    const circles = (container: HTMLElement) => container.querySelectorAll('.mb-musicBoxSvgWrapper circle').length;
+    const sliderHandle = (container: HTMLElement, setting: string) =>
+        // Blueprint's class prefix differs in the tests ("undefined-" instead of "bp3-").
+        container.querySelector(`.mb-audioSlider[data-setting="${setting}"] [class$="-slider-handle"]`) as HTMLElement;
+    /** Moves a slider with the keyboard and releases it. */
+    function moveSlider(container: HTMLElement, setting: string, steps: number) {
+        const handle = sliderHandle(container, setting);
+        const key = steps < 0 ? { which: 37, keyCode: 37 } : { which: 39, keyCode: 39 };
+        for (let i = 0; i < Math.abs(steps); i++) {
+            fireEvent.keyDown(handle, key);
+        }
+        fireEvent.keyUp(handle, key);
+    }
+
+    it('says before loading that MP3 is experimental and that MIDI files are preferable', () => {
+        const { container, getByText } = render(<MusicBoxSheetGenerator />);
+        expect(getByText('MIDI / MP3 File')).toBeTruthy();
+        expect(getByText(/MIDI files give exact results and are preferable. MP3 files are experimental/)).toBeTruthy();
+        expect(getByText(/melody played on piano or a\s+similar single instrument/)).toBeTruthy();
+        expect(getByText(/MIDI or MP3 \(experimental\)/)).toBeTruthy();
+        expect((container.querySelector('input[type="file"]') as HTMLInputElement).getAttribute('accept')).toContain('.mp3');
+    });
+
+    it('converts an MP3 to notes that follow the MIDI flow: preview, piano notes and DXF', async () => {
+        const { container, findByText, getByText, getAllByText } = render(<MusicBoxSheetGenerator />);
+        pickFile(container, mp3());
+        await findByText('MIDI ready');
+
+        // The notes Basic Pitch finds with the default settings, laid out like a MIDI file.
+        const expected = expectedAudioMidi(ANALYSIS, DEFAULT_AUDIO_TRANSCRIPTION_SETTINGS);
+        const format = fitSingleStrip(expected, BuiltInProfiles['thirtyNote'], DEFAULT_FORMAT);
+        const layout = computeMusicBoxLayout(expected, BuiltInProfiles['thirtyNote'], format);
+        expect(layout.extraction.notes.map(n => n.note)).toEqual([60, 64]);
+        expect(circles(container)).toBe(2);
+        // The C4 starts at frame 43 (0.5 s): that silence is removed, the E4 stays 0.5 s later.
+        expect(layout.extraction.notes[0].timeSeconds).toBe(0);
+        expect(layout.extraction.notes[1].timeSeconds).toBeCloseTo(0.4993, 3);
+        expect(getByText(/The 0\.50 s of silence before the first note were removed/)).toBeTruthy();
+
+        expect(getByText('2 notes detected.')).toBeTruthy();
+        expect(getAllByText('MP3 support is experimental').length).toBe(1);
+        expect(getByText(/A MIDI file is always preferable/)).toBeTruthy();
+        expect(getByText('128 ms (default)')).toBeTruthy();
+        expect((getByText('Reset to defaults').closest('button') as HTMLButtonElement).disabled).toBe(true);
+
+        fireEvent.click(getByText('Download DXF(s)'));
+        expect(await Promise.all(createdBlobs.map(readBlob))).toEqual(layout.drawings.map(createDxf));
+        expect(downloadedNames).toEqual(['melody_page_1.dxf']);
+    });
+
+    it('detects the notes again when a slider is released, and fits the sheet to the new notes', async () => {
+        const { container, findByText, getByText, getByRole } = render(<MusicBoxSheetGenerator />);
+        pickFile(container, mp3());
+        await findByText('2 notes detected.');
+
+        // A shorter minimum note length (11 -> 7 frames) keeps the short G4.
+        moveSlider(container, 'minNoteLengthFrames', -4);
+        await findByText('3 notes detected.');
+        expect(container.querySelector('[data-setting="minNoteLengthFrames"] .mb-audioSlider-value')!.textContent).toBe('81 ms');
+        const settings = { ...DEFAULT_AUDIO_TRANSCRIPTION_SETTINGS, minNoteLengthFrames: 7 };
+        const expected = expectedAudioMidi(ANALYSIS, settings);
+        const format = fitSingleStrip(expected, BuiltInProfiles['thirtyNote'], DEFAULT_FORMAT);
+        expect(circles(container)).toBe(3);
+
+        fireEvent.click(getByText('Layout/Pagination'));
+        expect(numericInput(within(getByRole('tabpanel')).getByText(/Max strip length/)).value).toBe(String(format.pageWidthMm));
+
+        fireEvent.click(getByText('Download DXF(s)'));
+        expect(await Promise.all(createdBlobs.map(readBlob)))
+            .toEqual(computeMusicBoxLayout(expected, BuiltInProfiles['thirtyNote'], format).drawings.map(createDxf));
+
+        // Back to the defaults.
+        fireEvent.click(getByText('MIDI / MP3 File'));
+        fireEvent.click(getByText('Reset to defaults'));
+        await findByText('2 notes detected.');
+        expect(circles(container)).toBe(2);
+    });
+
+    it('can end up with no notes: the preview explains it and the download is disabled', async () => {
+        audioMocks.analysis = activations([]);
+        const { container, findByText, getByText } = render(<MusicBoxSheetGenerator />);
+        pickFile(container, mp3());
+        await findByText('0 notes detected.');
+        expect(getByText('No supported MIDI notes!')).toBeTruthy();
+        expect((getByText('Download DXF(s)').closest('button') as HTMLButtonElement).disabled).toBe(true);
+        expect(circles(container)).toBe(0);
+    });
+
+    it('shows the progress, and ignores the MP3 if another file is picked meanwhile', async () => {
+        let open: () => void = () => undefined;
+        audioMocks.gate = new Promise<void>(resolve => { open = resolve; });
+        const { container, findByText, getByText, queryByText } = render(<MusicBoxSheetGenerator />);
+        pickFile(container, mp3('slow.mp3'));
+        await findByText(/Detecting the notes of the audio… 0%/);
+        expect(getByText('MP3 support is experimental')).toBeTruthy();
+        expect(getByText('No MIDI loaded')).toBeTruthy();
+
+        pickFile(container, new File([sampleBytes()], SAMPLE, { type: 'audio/midi' }));
+        await findByText('MIDI ready');
+        open();
+        await new Promise(resolve => setTimeout(resolve, 20));
+        // Still the MIDI file: no sliders, its own notes.
+        expect(queryByText(/notes detected/)).toBeNull();
+        expect(queryByText('MP3 support is experimental')).toBeNull();
+        expect(container.querySelector('h2')!.textContent).toBe(SAMPLE);
+        expect(circles(container)).toBe(computeMusicBoxLayout(loadSampleMidi(), BuiltInProfiles['thirtyNote'], fittedFormat()).extraction.notes.length);
+    });
+
+    it('shows a readable error for an MP3 that cannot be decoded', async () => {
+        audioMocks.decodeError = true;
+        const { container, findByText, getByText } = render(<MusicBoxSheetGenerator />);
+        pickFile(container, mp3('broken.mp3'));
+        await findByText('This file could not be loaded');
+        expect(getByText('The audio could not be decoded. Make sure the file is a valid MP3.')).toBeTruthy();
+        expect(getByText('No MIDI loaded')).toBeTruthy();
+    });
+
+    it('loads a MIDI file normally after an MP3, without the MP3 settings', async () => {
+        const { container, findByText, queryByText } = render(<MusicBoxSheetGenerator />);
+        pickFile(container, mp3());
+        await findByText('2 notes detected.');
+        pickFile(container, new File([sampleBytes()], SAMPLE, { type: 'audio/midi' }));
+        await wait(() => expect(queryByText(/notes detected/)).toBeNull());
+        await findByText('MIDI ready');
+        expect(queryByText(/Tempo:/)).not.toBeNull();
+        expect(circles(container)).toBe(computeMusicBoxLayout(loadSampleMidi(), BuiltInProfiles['thirtyNote'], fittedFormat()).extraction.notes.length);
     });
 });

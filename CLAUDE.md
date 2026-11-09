@@ -1,7 +1,7 @@
 # MusicBoxMelodyCreator
 
-Aplicación web (React + TypeScript) que convierte archivos MIDI en **tiras de papel perforado para cajas
-musicales de mecanismo de papel** (perfiles de 15 y 30 notas). Genera archivos **DXF** que se cortan con
+Aplicación web (React + TypeScript) que convierte archivos MIDI (y MP3, de forma **experimental**) en
+**tiras de papel perforado para cajas musicales de mecanismo de papel** (perfiles de 15 y 30 notas). Genera archivos **DXF** que se cortan con
 una Silhouette Cameo 5 en Silhouette Studio, y permite escuchar con un piano sintetizado exactamente lo
 que se va a perforar.
 
@@ -70,6 +70,11 @@ aprobado por el dueño (`.github/CODEOWNERS`); el dueño puede saltarse la regla
 ## Cómo funciona (flujo de datos)
 
 ```
+archivo .mp3 (experimental)
+  └─ utilities/AudioDecoding.ts       decodeAudioData del navegador → mono 22050 Hz
+      └─ utilities/BasicPitchTranscriber.ts  (chunk aparte, solo se descarga con un MP3)
+         │   Basic Pitch + TensorFlow.js: activaciones (una vez) → notas con los ajustes (rápido)
+         └─ utilities/AudioTranscription.ts  detectedNotesToMidi: SMF formato 0 → mismo flujo que un .mid
 archivo .mid
   └─ model/MidiFile.ts          parser SMF: eventos con absTicks → mapa de tempos → absTimeSeconds
       └─ utilities/MusicBoxNotes.ts   pistas (auto/todas/una), NoteOn vel>0, sin percusión (canal 10),
@@ -144,8 +149,42 @@ archivo .mid
   hay cambios sin aplicar se avisa en el panel (Apply / Discard) y junto a Download, porque la vista
   previa, el piano y el DXF usan siempre los valores aplicados. Download se desactiva si la tira no se
   puede generar. Hay tests de regresión de todo esto en `MusicBoxSheetGenerator.test.tsx`.
-- **UI**: siempre en **una sola columna** (preferencia del usuario). `MusicBoxSheetGenerator.tsx` (componente raíz). Los editores de perfil y formato validan con
-  `validateMusicBoxProfile` / `validateFormatOptions`. Pestañas: MIDI File, Paper/Music Box Settings y
+- **MP3 (experimental)**: Basic Pitch de Spotify (`@spotify/basic-pitch` 1.0.1 + `@tensorflow/tfjs`
+  3.21.0, fijados, Apache 2.0) corre **en el navegador** (WebGL; CPU si no hay): sin servidor ni API, el
+  audio no sale del equipo. TensorFlow y el modelo (`model.json` + `.bin` del paquete npm, importados con
+  `?url` y `weightUrlConverter`) van en un chunk que solo se descarga al abrir un MP3; el bundle principal
+  no los incluye. El modelo corre una vez por archivo (`analyzeAudioFile`, con progreso y cancelable si se
+  elige otro archivo; un solo análisis a la vez y se liberan sus tensores); las notas se leen de las
+  activaciones con los ajustes (`detectNotes`) y se escriben como MIDI formato 0, canal 1, 120 bpm,
+  0.5 ms por tick, velocidad = amplitud (decide la voz principal); después todo es el flujo MIDI normal.
+  - **Ajustes por defecto medidos** (decisión del usuario: "la mayor precisión posible"): onset 0.7,
+    frame 0.4, nota mínima 11 frames (127.7 ms) y **"melodia trick" desactivado**. Se midieron
+    renderizando `ode_to_joy.mid` y `happy_birthday.mid` con el piano de la app → MP3 → Chrome, y
+    comparando los agujeros con los del MIDI (15 y 30 notas, ±50 ms, misma línea): 98.5–100 % de las
+    notas reales y 79–94 % de agujeros correctos. Los de Basic Pitch (0.5/0.3, melodia on) dan las mismas
+    notas reales pero solo 63–72 % correctos y tardan ~40× más (9 s vs 0.2 s para 2 min, la interfaz se
+    congela). Onset ≥ 0.8 pierde notas de acordes; el filtro de armónicos y el refinamiento sub-frame del
+    tiempo se probaron y se descartaron (perdían notas / no mejoraban). Los falsos que quedan son sobre
+    todo re-ataques de notas que siguen sonando. Error de tiempo: desviación ~5–7 ms (≈0.1 mm a 20 mm/s),
+    peor caso 0.2–0.7 mm; el retraso constante (~6 ms) no cambia las distancias.
+  - **Silencio inicial recortado** (decisión del usuario, solo MP3): `trimLeadingSilence` mueve todas las
+    notas para que la primera quede en 0 (se recalcula con cada ajuste) y la interfaz dice cuántos
+    segundos se quitaron. Desplazamiento rígido: no cambia distancias. Los MIDI no se recortan (un
+    silencio inicial es parte de la música). Con el sample, la tira del MP3 mide 200.93 mm frente a
+    201.10 mm del MIDI (antes del recorte, 211.14 mm).
+  - Barras (Blueprint `Slider`) solo con un MP3 cargado; se aplican al **soltar** (sin Apply) y
+    recalculan el tamaño como un cambio de pista (sin tocar el borde). "Reset to defaults".
+  - Límite de 6 min de audio (memoria en móviles: ~250 MB de pico a 6 min). Textos en la interfaz (pedidos
+    por el usuario): MP3 es experimental, un MIDI siempre es preferible, y una melodía de piano o un solo
+    instrumento es la mejor entrada.
+  - `samples/ode_to_joy.mp3` es `ode_to_joy.mid` renderizado con el piano de la app (dominio público).
+  - Tests: `BasicPitchTranscriber.test.ts` corre el **modelo real** (CPU, ~20 s) con tonos sintéticos;
+    la prueba de extremo a extremo simula decodificación y modelo, pero usa la detección real de Basic
+    Pitch. En jsdom el prefijo de Blueprint es `undefined-` (no `bp3-`).
+- **UI**: siempre en **una sola columna** (preferencia del usuario). La barra de botones de la vista
+  previa se centra con márgenes automáticos: si no cabe (teléfono) empieza a la izquierda y se desplaza
+  (con `align-items: center` el primer botón quedaba cortado e inalcanzable). `MusicBoxSheetGenerator.tsx` (componente raíz). Los editores de perfil y formato validan con
+  `validateMusicBoxProfile` / `validateFormatOptions`. Pestañas: MIDI / MP3 File, Paper/Music Box Settings y
   Layout/Pagination. La vista 3D experimental (disco Fisher-Price con three.js) se eliminó por decisión
   del usuario: el proyecto es solo para tiras de papel.
 

@@ -24,3 +24,11 @@
     max-width: 320px;
     height: auto;
 }
+
+.mb-filePickerHint {
+    max-width: 440px;
+    margin: 8px auto 0;
+    color: var(--mb-muted, #727b70);
+    font-size: 12px;
+    line-height: 1.5;
+}
