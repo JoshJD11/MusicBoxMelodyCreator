@@ -28,7 +28,7 @@ const VARIANTS: { [name: string]: IMusicBoxSvgFormatOptions } = {
 
 const SAMPLES = [
     'happy_birthday.mid',
-    'The Lonely Man (The Incredible Hulk 1978) Finished Version.mid',
+    'ode_to_joy.mid',
     'You are my sunshine.mid',
 ];
 

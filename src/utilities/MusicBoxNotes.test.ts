@@ -229,7 +229,7 @@ describe('notes too close on the same line: the main voice wins', () => {
     });
 
     it('never leaves two holes too close on the same line, in time order (sample songs)', () => {
-        ['happy_birthday.mid', 'You are my sunshine.mid', 'The Lonely Man (The Incredible Hulk 1978) Finished Version.mid'].forEach(sample => {
+        ['happy_birthday.mid', 'You are my sunshine.mid', 'ode_to_joy.mid'].forEach(sample => {
             const b = fs.readFileSync(path.resolve(__dirname, '../../samples', sample));
             const midiFile = new MidiFile();
             midiFile.loadFromBuffer(Uint8Array.from(b).buffer);

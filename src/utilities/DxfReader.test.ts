@@ -22,7 +22,7 @@ const VARIANTS: IMusicBoxSvgFormatOptions[] = [
     { ...FORMAT, stripOrientation: 'vertical', mirrorVertically: true, jigsawJoiners: true },
     { ...FORMAT, stripOrientation: 'vertical', pageWidthMm: 0, pageHeightMm: 0 },
 ];
-const SAMPLES = ['happy_birthday.mid', 'You are my sunshine.mid', 'The Lonely Man (The Incredible Hulk 1978) Finished Version.mid'];
+const SAMPLES = ['happy_birthday.mid', 'You are my sunshine.mid', 'ode_to_joy.mid'];
 const TOLERANCE_MM = 1e-6; // the DXF keeps 6 decimals
 
 function flatten(sheet: ISheetDrawing) {

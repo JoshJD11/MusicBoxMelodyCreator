@@ -6,7 +6,8 @@ This project also includes a simple MIDI File parser based on the information av
 
 ## Available Scripts
 
-Requires Node.js 20.19 or newer. Install dependencies with `npm install`, then:
+Requires Node.js 20.19 or newer (Node.js 24 LTS recommended; the tests need 22.12+). Install
+dependencies with `npm ci`, then:
 
 | Command | Description |
 | --- | --- |
@@ -19,6 +20,23 @@ Requires Node.js 20.19 or newer. Install dependencies with `npm install`, then:
 | `npm run deploy` | Lints, tests, builds and publishes `dist` to GitHub Pages |
 
 The build uses relative paths, so `dist` can be served from any folder.
+
+## Desktop shortcut
+
+Run the script for your system once. It checks Node.js (and offers to install Node.js 24 LTS if it is
+missing), installs the dependencies and creates a "Music Box Melody Creator" shortcut on the desktop.
+Double-clicking the shortcut starts the app and opens it in the browser; closing its window stops it.
+
+- Windows (needs [Git for Windows](https://gitforwindows.org/)): double-click `script_windows.sh`.
+- Linux: `bash script_linux.sh`
+
+Run it again if you move the project folder.
+
+## Samples
+
+`samples/happy_birthday.mid` and `samples/You are my sunshine.mid` come from the original project.
+`samples/ode_to_joy.mid` is an arrangement of Beethoven's "Ode to Joy" (public domain) made for the
+tests of this project.
 
 ## License
 
@@ -44,3 +62,11 @@ Changes made by [JoshJD11] on [2026-11-07]:
 - DXF files are generated directly from the strip geometry.
 - Settings validation and resource cleanup in the audio player.
 - Migrated from Create React App to Vite, Vitest, ESLint 10 and TypeScript 6.
+- The preview is drawn by reading back the same DXF files that are downloaded.
+
+Changes made by [JoshJD11] on [2026-11-08]:
+- Vertical strip orientation, automatic sheet size that fits the song on a single strip, and strips centered as a block on each sheet.
+- Holes 0.2 mm larger than in the original project (2.0 mm for 15 notes, 2.2 mm for 30 notes).
+- Removed the experimental 3D disc view.
+- Desktop shortcut scripts for Windows and Linux.
+- Replaced a copyrighted sample MIDI with a public domain one.

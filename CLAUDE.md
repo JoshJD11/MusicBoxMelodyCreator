@@ -34,7 +34,21 @@ una nota no suene. Por eso:
 
 ## Comandos
 
-Requiere Node ≥ 20.19.
+Se usa **Node 24 LTS** (Vite pide ≥ 20.19; vitest 5 y jsdom 31 piden 22.12+/24+). En Windows está
+instalado con winget y fijado a 24.x (`winget pin`), para que `winget upgrade --all` no lo suba a 26.
+No copies `node_modules` entre Windows y Linux (los binarios nativos son distintos): `npm ci` en cada uno.
+
+**Acceso directo en el escritorio** (un solo archivo por sistema, no generan nada dentro del repo):
+- `script_windows.sh` (Git Bash; doble clic): convierte `public/shortcut-icon.png` a `.ico` en
+  `%LOCALAPPDATA%\MusicBoxMelodyCreator` y crea `Music Box Melody Creator.lnk`, que ejecuta
+  `bash script_windows.sh --run`. Si falta Node, ofrece instalar Node 24 LTS con winget.
+- `script_linux.sh` (`bash script_linux.sh`): crea `music-box-melody-creator.desktop` (Terminal=true,
+  icono copiado a `~/.local/share/music-box-melody-creator`). Si falta Node, ofrece descargar Node 24 de
+  nodejs.org (SHA-256 comprobado) en esa carpeta, sin sudo. Carga Node de nvm/fnm/volta si existe.
+- `--run` en ambos: `npm ci` si faltan dependencias, vienen del otro sistema o cambió el lockfile;
+  si la app ya está en :5173 solo abre el navegador; si no, `npm run dev -- --open`. Cerrar la ventana
+  detiene la app. Los dos toleran CRLF (`set -o igncr`, por `core.autocrlf`). Si se mueve la carpeta,
+  hay que volver a ejecutar el script.
 
 | Comando | Qué hace |
 | --- | --- |
@@ -133,7 +147,11 @@ archivo .mid
 - TypeScript `strict`. Lógica en funciones puras dentro de `model/` y `utilities/`, testeadas sin React.
   Los componentes solo presentan.
 - Un test por módulo, junto al archivo (`*.test.ts[x]`). `src/testUtils/midiBuilder.ts` construye MIDI
-  byte a byte para los tests. Los samples reales están en `samples/`.
+  byte a byte para los tests. Los samples reales están en `samples/`. El repo es público (GPLv3): solo MIDIs de dominio público, del
+proyecto original o generados aquí, nunca canciones con derechos de autor (`ode_to_joy.mid` sustituyó
+a uno así; arreglo generado byte a byte, sin script en el repo: formato 0, una pista, 538 notas,
+acordes, running status, bajos a transponer y un cambio de tempo). Las
+licencias de las skills de terceros están en `.claude/skills/THIRD_PARTY_LICENSES.md`.
 - `MusicBoxSheetGenerator.test.tsx` es la prueba de extremo a extremo: carga un MIDI desde la interfaz
   y comprueba que el DXF descargado es idéntico al calculado.
 - Se usan React 16 + Blueprint 3 a propósito. Pasar a React 18 obliga a migrar Blueprint 3 → 5, que

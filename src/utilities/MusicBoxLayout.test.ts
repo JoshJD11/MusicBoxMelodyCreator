@@ -41,7 +41,7 @@ const FORMAT_VARIANTS: { [name: string]: IMusicBoxSvgFormatOptions } = {
 
 const SAMPLES = [
     'happy_birthday.mid',
-    'The Lonely Man (The Incredible Hulk 1978) Finished Version.mid',
+    'ode_to_joy.mid',
     'You are my sunshine.mid',
 ];
 
@@ -397,7 +397,13 @@ describe('fitSingleStrip', () => {
                 // One strip on one sheet, with the same holes as without any size limit.
                 expect(layout.pages.length).toBe(1);
                 expect(layout.sheets.length).toBe(1);
-                expect(layout.pages).toEqual(unlimited.pages);
+                expect(unlimited.pages.length).toBe(1);
+                expect(layout.pages[0].notes).toEqual(unlimited.pages[0].notes);
+                expect(layout.pages[0].startTimeInSeconds).toBe(unlimited.pages[0].startTimeInSeconds);
+                // The end is min(last note + padding, sheet end). When the song is an exact number of
+                // millimeters long, both are the same length computed two ways: they may differ by one
+                // floating-point step (~1e-14 s, ~1e-13 mm; the DXF keeps 6 decimals).
+                expect(Math.abs(layout.pages[0].endTimeInSeconds - unlimited.pages[0].endTimeInSeconds)).toBeLessThan(EPSILON);
                 expect(layout.sheets[0].strips[0].geometry.circles).toEqual(unlimited.sheets[0].strips[0].geometry.circles);
                 expectPhysicallyValid(layout, profile, fitted);
             });
