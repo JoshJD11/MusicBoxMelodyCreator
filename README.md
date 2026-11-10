@@ -13,6 +13,13 @@ click or tap a hole to select it (it is ringed in green under the mouse), then p
 Backspace or the Delete button. Undo (also Ctrl+Z / ⌘Z) and Restore all bring them back. The
 piano and the downloaded DXF never contain the deleted holes.
 
+While the melody plays, an orange line moves over the strips (across the strip being played, in
+both orientations and over every strip and sheet) and crosses each hole when its note sounds; the
+box of the strips scrolls with it (the rest of the page scrolls freely). Drag the line (mouse or
+finger) to go back or forward: the melody pauses, the holes it crosses sound, and the play button
+goes on from where you leave it. A tap on a hole under the line still selects it, so a note you
+don't like can be found and deleted.
+
 **Try it online:** https://musicboxmelodycreator.vercel.app
 
 This project also includes a simple MIDI File parser based on the information available at https://www.midi.org/ and http://www.somascape.org/midi/tech/mfile.html. The parser by itself can be used to analyze MIDI files, convert MIDI to JSON, convert delta times to absolute seconds, etc.
@@ -126,3 +133,14 @@ Changes made by [JoshJD11] on [2026-11-09]:
   playing, without skipping notes). The silence of a MIDI file before its first note is kept.
 - A long file name no longer overflows the preview panel (it ends in "…"; the full name is shown on
   hover), and the note histogram is no longer cut off on narrow screens.
+
+Changes made by [JoshJD11] on [2026-11-10]:
+- Playback line on the preview, like on musicbox.fun: it follows the melody (only the box of the
+  strips scrolls with it, never the page, and in both orientations the box is at most 75% of the
+  window high), can be dragged to move back or forward (the melody pauses and the holes crossed sound
+  to their end), and the holes glow as it crosses them. Play starts from the line; Restart from the
+  beginning.
+- The sound preview no longer crackles on phones with dense melodies: every note stayed connected to
+  the audio output until the end of the song, so the audio processing grew heavier as the song went
+  on (in Chrome, from 10% to 71% of its capacity after 2 minutes of a dense song). Notes are now
+  disconnected when they finish (12-15%, steady). The sound itself and its volume are unchanged.

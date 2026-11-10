@@ -22,6 +22,7 @@ import MidiJsonConverter from "./utilities/MidiJsonConverter";
 import { buildGeneratedMusicBoxSequence, IGeneratedMusicBoxEvent } from "./utilities/MusicBoxMidi";
 import {
   extractMusicBoxNotes,
+  IMusicBoxNote,
   INoteExtractionOptions,
   TrackSelection,
 } from "./utilities/MusicBoxNotes";
@@ -74,6 +75,11 @@ interface IAppState {
   trackSelection: TrackSelection;
   showMidiJson: boolean;
   playbackState: PlaybackState;
+  /**
+   * Song time of the playback line while it doesn't move by itself: where Play starts when stopped
+   * (the start, unless the line was dragged), and where the song is when paused.
+   */
+  playheadSeconds: number;
   selectedTab: SettingsTab;
   /** Settings panels with edited values that have not been applied yet. */
   unappliedPaper: boolean;
@@ -97,8 +103,16 @@ export default class MusicBoxSheetGenerator extends React.Component<
   IAppState
 > {
   private readonly player = new PianoPlayer((playbackState) =>
-    this.setState({ playbackState })
+    this.onPlaybackStateChange(playbackState)
   );
+
+  /**
+   * Where the line was dragged while the song was still pausing (the player can only move once
+   * paused): applied when the pause is done.
+   */
+  private pendingDragSeconds: number | null = null;
+  /** The last position of the line during a drag. */
+  private draggedSeconds: number | null = null;
 
   constructor(props: AppProps) {
     super(props);
@@ -113,6 +127,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
       unappliedLayout: false,
       showMidiJson: false,
       playbackState: "stopped",
+      playheadSeconds: 0,
       holeEdits: NO_HOLE_EDITS,
       selectedHoles: NO_SELECTION,
     };
@@ -253,11 +268,22 @@ export default class MusicBoxSheetGenerator extends React.Component<
         musicBoxSvgFormatOptions: refitAfterHoleEdits(state, holeEdits.deleted),
       }),
       () => {
+        // Deleting (or bringing back) the first holes moves the song in time: the piano and the line
+        // stay at the same point of the music.
+        const shiftSeconds = this.removedLeadingSeconds() - removedBefore;
         if (this.player.getState() !== "stopped") {
-          // Deleting (or bringing back) the first holes moves the song in time: the piano stays at
-          // the same point of the music.
-          const shiftSeconds = this.removedLeadingSeconds() - removedBefore;
           this.player.updateSequence(this.buildPianoSequence(), shiftSeconds);
+          if (this.player.getState() === "paused") {
+            this.setState({ playheadSeconds: this.player.getPosition() ?? 0 });
+          }
+        } else if (shiftSeconds !== 0) {
+          // Stopped: a line at the start (or before it) stays there; elsewhere it moves with the
+          // music, but never before the start.
+          this.setState((state) => ({
+            playheadSeconds: state.playheadSeconds <= 0
+              ? state.playheadSeconds
+              : Math.max(0, state.playheadSeconds - shiftSeconds),
+          }));
         }
       }
     );
@@ -293,6 +319,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
             // Other notes, other length: the sheet is fitted again.
             this.setState((state) => ({
               trackSelection,
+              playheadSeconds: 0,
               musicBoxSvgFormatOptions: fitFormatToSong(
                 state.midiFile, state.musicBoxProfile, state.musicBoxSvgFormatOptions, trackSelection,
                 state.holeEdits.deleted),
@@ -313,6 +340,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
             // even over sizes typed by hand.
             this.setState((state) => ({
               musicBoxProfile,
+              playheadSeconds: 0,
               musicBoxSvgFormatOptions: fitFormatToSong(
                 state.midiFile, musicBoxProfile, state.musicBoxSvgFormatOptions, state.trackSelection,
                 state.holeEdits.deleted),
@@ -330,6 +358,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
           onChange={(musicBoxSvgFormatOptions) => {
             this.player.stop();
             this.setState((state) => ({
+              playheadSeconds: 0,
               musicBoxSvgFormatOptions: shouldRefitSheet(state.musicBoxSvgFormatOptions, musicBoxSvgFormatOptions)
                 ? fitFormatToSong(state.midiFile, state.musicBoxProfile, musicBoxSvgFormatOptions,
                   state.trackSelection, state.holeEdits.deleted)
@@ -455,10 +484,20 @@ export default class MusicBoxSheetGenerator extends React.Component<
                   <DxfPreview
                     files={layout}
                     paperWidthMm={this.state.musicBoxProfile.paperWidthMm}
-                    limitHeight={this.state.musicBoxSvgFormatOptions.stripOrientation === "vertical"}
+                    // Both orientations (decision of the user): the box scrolls with the playback line
+                    // and the page never has to.
+                    limitHeight={true}
                     selectedHoleIds={this.state.selectedHoles}
                     onHoleClick={this.toggleHoleSelection}
                     toolbar={holeToolbar}
+                    playhead={{
+                      seconds: this.state.playheadSeconds,
+                      playing: isPlaying,
+                      getSeconds: this.getPlayerPosition,
+                      onDragStart: this.onPlayheadDragStart,
+                      onDrag: this.onPlayheadDrag,
+                      onDragEnd: this.onPlayheadDragEnd,
+                    }}
                   />
                 )}
               </div>
@@ -504,6 +543,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
       midiFile: undefined,
       fileName: undefined,
       midiJson: "",
+      playheadSeconds: 0,
       holeEdits: NO_HOLE_EDITS,
       selectedHoles: NO_SELECTION,
     });
@@ -516,6 +556,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
       fileName,
       midiJson: MidiJsonConverter.GetJson(midiFile),
       trackSelection: "auto",
+      playheadSeconds: 0,
       // Holes deleted by hand belong to the previous file.
       holeEdits: NO_HOLE_EDITS,
       selectedHoles: NO_SELECTION,
@@ -535,6 +576,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
     this.setState((state) => ({
       midiFile,
       midiJson: MidiJsonConverter.GetJson(midiFile),
+      playheadSeconds: 0,
       holeEdits: NO_HOLE_EDITS,
       selectedHoles: NO_SELECTION,
       musicBoxSvgFormatOptions: fitFormatToSong(
@@ -583,17 +625,72 @@ export default class MusicBoxSheetGenerator extends React.Component<
         await this.player.resume();
         break;
       default:
-        await this.playGeneratedPiano();
+        // From the line: the start, unless it was dragged somewhere else.
+        await this.playGeneratedPiano(this.state.playheadSeconds);
     }
   }
 
-  /** Plays, from the start, exactly the notes punched in the strip. */
-  private async playGeneratedPiano(): Promise<void> {
+  /** Plays exactly the notes punched in the strip, from the song time `fromSeconds` (Restart: 0). */
+  private async playGeneratedPiano(fromSeconds = 0): Promise<void> {
     if (!this.state.midiFile) {
       return;
     }
-    await this.player.play(this.buildPianoSequence());
+    await this.player.play(this.buildPianoSequence(), fromSeconds);
   }
+
+  /**
+   * Paused: the line stays where the music is (or where it was dragged to). Stopped (the song ended,
+   * or something stopped it): the line goes back to the start.
+   */
+  private onPlaybackStateChange(playbackState: PlaybackState) {
+    if (playbackState === "paused") {
+      this.setState({ playbackState, playheadSeconds: this.pendingDragSeconds ?? this.player.getPosition() ?? 0 });
+    } else if (playbackState === "stopped") {
+      this.setState({ playbackState, playheadSeconds: 0 });
+    } else {
+      this.setState({ playbackState });
+    }
+  }
+
+  private readonly getPlayerPosition = () => this.player.getPosition();
+
+  /** Grabbing the line pauses the song: it goes on only with the play button. */
+  private readonly onPlayheadDragStart = () => {
+    this.draggedSeconds = null;
+    this.pendingDragSeconds = null;
+    if (this.player.getState() === "playing") {
+      this.player.pause().then(() => {
+        const seconds = this.pendingDragSeconds;
+        this.pendingDragSeconds = null;
+        if (seconds !== null) {
+          this.player.seek(seconds);
+          this.setState({ playheadSeconds: seconds });
+        }
+      });
+    }
+  };
+
+  /** The line was dragged: the song will go on from there, and the holes it crossed sound. */
+  private readonly onPlayheadDrag = (seconds: number, crossed: IMusicBoxNote[]) => {
+    this.draggedSeconds = seconds;
+    const state = this.player.getState();
+    if (state === "playing") {
+      this.pendingDragSeconds = seconds; // still pausing
+      return;
+    }
+    if (state === "paused") {
+      this.player.seek(seconds);
+    }
+    this.player.scrub(crossed.map((note) => ({ note: note.note, velocity: note.velocity })));
+  };
+
+  private readonly onPlayheadDragEnd = () => {
+    const seconds = this.draggedSeconds;
+    this.draggedSeconds = null;
+    if (seconds !== null) {
+      this.setState({ playheadSeconds: seconds });
+    }
+  };
 
   /** The notes punched in the strip (without the holes deleted by hand), for the piano. */
   private buildPianoSequence(): IGeneratedMusicBoxEvent[] {

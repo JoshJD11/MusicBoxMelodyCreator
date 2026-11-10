@@ -26,7 +26,8 @@ una nota no suene. Por eso:
 - La vista previa se dibuja **leyendo los mismos documentos DXF que se descargan** (`parseDxf`). Se
   calculan una sola vez (`getLayout` en `MusicBoxSheetGenerator`). Lo que se ve es el archivo.
   Comprobado: es idéntica píxel a píxel a la vista previa anterior, que se dibujaba desde la geometría.
-  Lo único que se añade encima son los resaltados verdes de los agujeros (bajo el ratón / seleccionados).
+  Lo único que se añade encima son los resaltados verdes de los agujeros (bajo el ratón / seleccionados)
+  y la línea de reproducción naranja con su brillo (ver "Línea de reproducción").
 - El piano reproduce **exactamente** las notas perforadas (`extractMusicBoxNotes`, sin los agujeros
   borrados a mano). No tiene lógica propia.
 - `$INSUNITS=4` (mm) y las capas `CUT`/`HOLES` del DXF se mantienen a propósito: el flujo de Silhouette
@@ -139,11 +140,51 @@ archivo .mid
   desde fuera toman el valor nuevo y se conservan los demás cambios sin aplicar).
 - **Agujeros**: 2.0 mm (15 notas) y 2.2 mm (30 notas), 0.2 mm más que el proyecto original (decisión
   del usuario). Los tests con cuentas a mano usan un perfil de prueba con agujeros de 2 mm.
-- **Vista previa**: en vertical, el cuadro de las hojas mide como mucho el 75% del alto de la ventana y
-  tiene scroll propio, para llegar rápido al final de la página. En horizontal no hay límite. El `<svg>`
+- **Vista previa**: el cuadro de las hojas mide como mucho el 75% del alto de la ventana y tiene scroll
+  propio, en vertical y en horizontal (en horizontal no tenía límite hasta que la línea de reproducción
+  lo pidió: decisión del usuario, para seguirla sin mover la página). El `<svg>`
   no recorta el trazo de las líneas que caen en el borde de la hoja (solo afecta a la pantalla). Cada hoja
   se centra en el cuadro (las más anchas empiezan a la izquierda para poder desplazarse). No se dibuja
-  nada que no esté en el DXF, salvo los resaltados de los agujeros (ver "Borrar agujeros").
+  nada que no esté en el DXF, salvo los resaltados de los agujeros (ver "Borrar agujeros") y la línea de
+  reproducción. Los tests que cuentan formas del DXF en la vista previa usan `[stroke="black"]`.
+- **Línea de reproducción** (pedida por el usuario, "como en musicbox.fun"; `Playhead.ts`, `DxfPreview.tsx`):
+  - Geometría (`playheadAt`, pura): el instante t está en la página con `inicio ≤ t < fin` (un corte se
+    muestra al inicio de la tira siguiente), a `(t − inicio) × mm/s` a lo largo de su tira (la misma
+    fórmula que los agujeros), y se coloca en la hoja con `drawSheet` (una tira con una sola línea): sigue
+    la orientación, el espejo, el centrado y el orden de las tiras. Cruza el centro de cada agujero
+    **justo cuando suena su nota** (test con los círculos del DXF: 3 samples × 2 perfiles × 13 formatos,
+    con varias tiras y hojas). `timeAtPoint` es la inversa (la tira más cercana al punto). Antes del
+    inicio queda en el borde de entrada; después del final, en el final.
+  - Se dibuja fuera de React (atributos de un `<g>` por hoja, oculto en las demás) en cada fotograma
+    mientras suena. Sobresale 2.5 mm a cada lado con manijas redondas; banda invisible de 4 mm para
+    agarrarla (7 mm en pantallas táctiles), `touch-action: none` y `touchmove` bloqueado mientras se
+    arrastra (la página no se desplaza con el dedo).
+  - Detenida (decisión del usuario): visible en el tiempo 0 de la canción (donde siempre empezó Play).
+    Play empieza desde la línea; Restart, desde el inicio. Al terminar la canción o cualquier cambio que
+    detiene el piano (archivo, pista, perfil, layout), vuelve al inicio. Borrar los primeros agujeros
+    con el piano detenido la mueve con la música (en el inicio se queda en el inicio).
+  - Arrastrar (decisión del usuario): un toque que se mueve más de 4 px (8 px con el dedo) es arrastre;
+    menos es un clic, que sigue seleccionando el agujero bajo la línea. Al empezar a arrastrar se pausa
+    el piano y solo sigue con el botón de play, desde la línea (`PianoPlayer.seek`: las notas que sonaban
+    se apagan en 15 ms; `resume` programa desde ahí). Los agujeros que cruza suenan una vez
+    (`PianoPlayer.scrub`, máximo 6 por movimiento, en el orden en que los cruza, también hacia atrás);
+    con el piano en pausa sin mover la línea no suenan (las notas pausadas esperan en el reloj detenido).
+    Cada una suena **completa** (reportado por el usuario: antes cada movimiento las cortaba en 15 ms):
+    `seek` solo apaga las notas de la canción, y Play / continuar tampoco cortan las del arrastre.
+    Cerca del borde del cuadro o de la ventana, el arrastre desplaza la vista (lo pide el arrastre).
+  - Seguimiento (decisión del usuario): mientras suena, **solo el cuadro** de las tiras se desplaza para
+    que la línea quede a 1/3 a lo largo de la canción (como el papel bajo el peine; en horizontal, a 1/3
+    del ancho y la fila centrada al cambiar de fila). La página **nunca** se mueve sola, ni al dar Play
+    (reportado por el usuario: antes lo arrastraba de vuelta a la línea). Mientras suena el cuadro tiene
+    `overflow: hidden` (clase `mb-musicBoxSvgPages-following`), así la rueda o el dedo sobre él mueven la
+    página en vez de pelear con el seguimiento; `scrollbar-gutter: stable` evita que el contenido salte.
+    En pausa o detenido se desplaza a mano como siempre.
+  - Resaltar la nota (decisión del usuario): el agujero brilla en naranja 0.6 s cuando la línea lo cruza
+    (no tras un salto de más de 0.5 s). No hay atajo de barra espaciadora (el usuario no lo quiso).
+  - Posición (`PianoPlayer.getPosition`): lo que se oye, con la latencia del dispositivo
+    (`getOutputTimestamp`); nunca antes de donde empezó. Comprobado en Chrome (escritorio, 5 hojas con
+    2 columnas, horizontal con filas, espejo y teléfono con toque): la línea coincide con la geometría y
+    pasa de tira y de hoja al reproducir. El inicio tras Play / continuar es de 0.1 s (antes 0.5 s).
 - **Borrar agujeros** (pedido por el usuario; `HoleEdits.ts`, `HoleEditToolbar.tsx`, `DxfPreview.tsx`):
   - Cada agujero tiene un `id` = pista + índice del evento Note On en esa pista (`musicBoxNoteId`): no
     depende del perfil ni del layout. `layout.holeNotes[hoja][j]` es la nota del círculo j de esa hoja, en
@@ -192,6 +233,18 @@ archivo .mid
   Cadena: ganancia 1.0 → limitador (−12 dB, 20:1, ataque 1 ms) → altavoces. Medido con render offline
   de los 3 samples (15 y 30 notas): pico 0.69–0.75 y −12.9 a −13.5 dB RMS, sin saturación (con el
   timbre de piano: pico 0.71–0.81 y −14.0 a −14.5 dB). Si cambias el timbre o la cadena, vuelve a medir.
+  - **Saturación en teléfonos con melodías densas** (reportada por el usuario): era el procesador, no el
+    volumen. Cada nota quedaba conectada a la salida hasta el final de la canción; el hilo de audio
+    procesaba miles de nodos callados, cada vez más (medido en Chrome con CDP `WebAudio.getRealtimeData`:
+    The Entertainer con todas las pistas, 24–28 notas sonando, de 10% a 71% de su capacidad en 2 min, con
+    picos de 99%; los nodos no bajaban ni forzando el recolector). Ahora cada nota se desconecta al
+    terminar (`releaseFinishedNotes`): 12–15% estable; la más densa del corpus (Chopin op. 10/9, todas las
+    pistas, hasta 42 notas) 14–18%, pico 29%. El sonido no cambia (mismos nodos y envolventes).
+  - Volumen revisado con 14 canciones (3 samples, 10 de Mutopia y una del usuario) × 15/30 notas × pista
+    auto/todas: pico 0.64–0.86, 0 muestras recortadas, −12.0 a −16.7 LUFS integrados; las densas no suenan
+    más fuerte que las simples (el limitador). Con el modelo del altavoz del iPhone 7 (TI SLAA857:
+    excursión y temperatura de la bobina) las densas mueven la membrana como mucho un 10% más. Por eso no
+    se tocó la ganancia. No se probó en un teléfono real.
 - **Ajustes con Apply**: los paneles de ajustes se mantienen montados (ocultos) al cambiar de pestaña,
   para que los cambios sin aplicar no se pierdan. Si
   hay cambios sin aplicar se avisa en el panel (Apply / Discard) y junto a Download, porque la vista

@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import React from 'react';
-import { render, fireEvent, cleanup, within, wait } from '@testing-library/react';
+import { render, fireEvent, cleanup, within, wait, act } from '@testing-library/react';
 import MusicBoxSheetGenerator from './MusicBoxSheetGenerator';
 import MidiFile from './model/MidiFile';
 import { BuiltInProfiles } from './model/IMusicBoxProfile';
@@ -11,7 +11,9 @@ import { buildMidi, endOfTrack, noteOff, noteOn } from './testUtils/midiBuilder'
 import { createDxf } from './utilities/DxfExporter';
 import { parseDxf } from './utilities/DxfReader';
 import { buildGeneratedMusicBoxSequence } from './utilities/MusicBoxMidi';
-import PianoPlayer from './utilities/PianoPlayer';
+import PianoPlayer, { START_DELAY_SECONDS } from './utilities/PianoPlayer';
+import { playheadAt } from './utilities/Playhead';
+import { FakeAudioContext, fakeAudioContext } from './testUtils/fakeAudioContext';
 import { detectNotes } from './utilities/BasicPitchTranscriber';
 import {
     DEFAULT_AUDIO_TRANSCRIPTION_SETTINGS,
@@ -166,7 +168,8 @@ describe('MusicBoxSheetGenerator (end to end)', () => {
         expect(sheets.length).toBe(1);
         expect(sheets[0].getAttribute('width')).toBe('70.1mm');
         expect(sheets[0].getAttribute('height')).toBe(format.pageWidthMm + 'mm');
-        expect(container.querySelectorAll('.mb-musicBoxSvgWrapper circle').length).toBe(layout.extraction.notes.length);
+        // Only the holes of the DXF (the playback line and its handles are drawn over them).
+        expect(container.querySelectorAll('.mb-musicBoxSvgWrapper circle[stroke="black"]').length).toBe(layout.extraction.notes.length);
 
         fireEvent.click(getByText('Download DXF(s)'));
         expect(createdBlobs.length).toBe(1);
@@ -200,8 +203,9 @@ describe('MusicBoxSheetGenerator (end to end)', () => {
         const format: IMusicBoxSvgFormatOptions = { ...fittedFormat(), stripOrientation: 'horizontal' };
         const layout = computeMusicBoxLayout(loadSampleMidi(), BuiltInProfiles['thirtyNote'], format);
 
-        // Horizontal sheets: the preview is not limited in height.
-        expect(container.querySelector('.mb-musicBoxSvgPages-limited')).toBeNull();
+        // Horizontal sheets too: the preview is limited in height and scrolls on its own (it follows
+        // the playback line without scrolling the page).
+        expect(container.querySelector('.mb-musicBoxSvgPages-limited')).not.toBeNull();
         const svgs = container.querySelectorAll('.mb-musicBoxSvgWrapper svg');
         expect(svgs.length).toBe(1);
         expect(svgs[0].getAttribute('width')).toBe(format.pageWidthMm + 'mm');
@@ -353,7 +357,7 @@ describe('MusicBoxSheetGenerator (end to end)', () => {
         expect(padded.pageWidthMm).toBeGreaterThan(fitted.pageWidthMm);
         expect(length().value).toBe(String(padded.pageWidthMm));
         expect((getByLabelText('Render border') as HTMLInputElement).checked).toBe(false);
-        expect(container.querySelectorAll('.mb-musicBoxSvgWrapper line').length).toBe(0);
+        expect(container.querySelectorAll('.mb-musicBoxSvgWrapper line[stroke="black"]').length).toBe(0);
 
         // Sizes typed together with a padding change are kept.
         fireEvent.change(padding(), { target: { value: '20' } });
@@ -479,7 +483,7 @@ describe('MusicBoxSheetGenerator with MP3 files (experimental)', () => {
     });
 
     const mp3 = (name = 'melody.mp3') => new File([new Uint8Array([0xFF, 0xFB, 0x90, 0x00])], name, { type: 'audio/mpeg' });
-    const circles = (container: HTMLElement) => container.querySelectorAll('.mb-musicBoxSvgWrapper circle').length;
+    const circles = (container: HTMLElement) => container.querySelectorAll('.mb-musicBoxSvgWrapper circle[stroke="black"]').length;
     const sliderHandle = (container: HTMLElement, setting: string) =>
         // Blueprint's class prefix differs in the tests ("undefined-" instead of "bp3-").
         container.querySelector(`.mb-audioSlider[data-setting="${setting}"] [class$="-slider-handle"]`) as HTMLElement;
@@ -965,5 +969,214 @@ describe('MusicBoxSheetGenerator: deleting holes in the preview', () => {
         fireEvent.click(getByText('Undo'));
         expect(dxfHoles(container)).toBe(ids.length);
         expect(await downloadAll(getByText)).toEqual(layout.drawings.map(createDxf));
+    });
+});
+
+describe('MusicBoxSheetGenerator: playback line', () => {
+    const THIRTY = BuiltInProfiles['thirtyNote'];
+    const PX_PER_MM = 10;
+    let frames: FrameRequestCallback[];
+
+    beforeEach(() => {
+        vi.stubGlobal('AudioContext', FakeAudioContext);
+        frames = [];
+        vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => { frames.push(callback); return frames.length; });
+        vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+        cleanup();
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+    });
+
+    const runFrame = () => {
+        const pending = frames;
+        frames = [];
+        act(() => pending.forEach(callback => callback(0)));
+    };
+    const layoutFor = (format = fittedFormat()) => computeMusicBoxLayout(loadSampleMidi(), THIRTY, format);
+    const sequence = () => buildGeneratedMusicBoxSequence(loadSampleMidi(), THIRTY,
+        { transposeOutOfRangeNotes: true, includePercussion: false, trackSelection: 'auto' });
+    /** Notes of the fake audio context after `from` (index of its oscillators), as [note, start]. */
+    const notesFrom = (from: number) => {
+        const oscillators = fakeAudioContext().oscillators.slice(from);
+        const notes: Array<[number, number]> = [];
+        for (let i = 0; i < oscillators.length; i += 4) {
+            if (!oscillators[i].stopped) {
+                notes.push([Math.round(69 + 12 * Math.log2(oscillators[i].frequency.value / 440)), oscillators[i].startAt as number]);
+            }
+        }
+        return notes;
+    };
+
+    async function loadSample() {
+        const utils = render(<MusicBoxSheetGenerator />);
+        pickFile(utils.container, new File([sampleBytes()], SAMPLE, { type: 'audio/midi' }));
+        await utils.findByText('MIDI ready');
+        placeSheets(utils.container);
+        return utils;
+    }
+    /** jsdom has no layout: each sheet is drawn at 10 px per mm at the top-left corner. */
+    function placeSheets(container: HTMLElement) {
+        container.querySelectorAll('.mb-musicBoxSvgWrapper svg').forEach(element => {
+            const svg = element as SVGSVGElement;
+            svg.getBoundingClientRect = () => {
+                const [, , w, h] = svg.getAttribute('viewBox')!.split(' ').map(Number);
+                return { left: 0, top: 0, x: 0, y: 0, width: w * PX_PER_MM, height: h * PX_PER_MM, right: w * PX_PER_MM, bottom: h * PX_PER_MM, toJSON: () => ({}) } as DOMRect;
+            };
+        });
+    }
+    function shownLine(container: HTMLElement) {
+        const group = Array.from(container.querySelectorAll('.mb-playhead')).find(g => (g as SVGGElement).style.display !== 'none')!;
+        expect(group).toBeTruthy();
+        const line = group.querySelector('.mb-playheadLine')!;
+        const [x1, y1, x2, y2] = ['x1', 'y1', 'x2', 'y2'].map(a => Number(line.getAttribute(a)));
+        return { x1, y1, x2, y2 };
+    }
+    /** Drags the line (of a vertical strip) from where it is to the moment `seconds`. */
+    function dragLineTo(container: HTMLElement, layout: IMusicBoxLayout, seconds: number) {
+        const hit = container.querySelector('.mb-playheadHit')!;
+        const from = shownLine(container);
+        const x = (from.x1 + from.x2) / 2;
+        const to = playheadAt(layout, seconds)!.line;
+        fireEvent.pointerDown(hit, { pointerId: 1, pointerType: 'mouse', button: 0, clientX: x * PX_PER_MM, clientY: from.y1 * PX_PER_MM });
+        fireEvent.pointerMove(hit, { pointerId: 1, pointerType: 'mouse', clientX: x * PX_PER_MM, clientY: to.y1 * PX_PER_MM });
+        return async () => {
+            fireEvent.pointerUp(hit, { pointerId: 1, pointerType: 'mouse', clientX: x * PX_PER_MM, clientY: to.y1 * PX_PER_MM });
+            // The click that ends a drag is ignored only within the same moment.
+            await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)); });
+        };
+    }
+    /** Moves the audio clock and lets the piano schedule its next notes. */
+    async function advanceAudio(seconds: number) {
+        fakeAudioContext().currentTime += seconds;
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 150)); });
+    }
+
+    it('starts at the beginning of the song; dragged while stopped, the holes crossed sound and Play starts from the line', async () => {
+        vi.spyOn(PianoPlayer, 'isSupported').mockReturnValue(true);
+        const { container, getByText } = await loadSample();
+        const layout = layoutFor();
+        // Song time 0, where Play has always started.
+        expect(shownLine(container).y1).toBeCloseTo(playheadAt(layout, 0)!.line.y1, 9);
+
+        const notes = layout.extraction.notes;
+        const target = notes[5].timeSeconds + 0.01;
+        const release = dragLineTo(container, layout, target);
+        await wait(() => expect(fakeAudioContext()).toBeTruthy());
+        // The holes crossed (notes 0 to 5) sound once, right away; the piano stays stopped.
+        await wait(() => expect(notesFrom(0).length).toBe(Math.min(6, notes.filter(n => n.timeSeconds <= target).length)));
+        expect(notesFrom(0).every(([, start]) => start === 0)).toBe(true);
+        expect(getByText('Play generated piano')).toBeTruthy();
+        await release();
+        expect(shownLine(container).y1).toBeCloseTo(playheadAt(layout, target)!.line.y1, 9);
+
+        const before = fakeAudioContext().oscillators.length;
+        const playAt = fakeAudioContext().currentTime;
+        fireEvent.click(getByText('Play generated piano'));
+        await wait(() => expect(getByText('Pause piano')).toBeTruthy());
+        await advanceAudio(2);
+        // From the line: the next note (notes[6]) is the first one, START_DELAY_SECONDS after Play.
+        const next = sequence().filter(e => e.startTimeSeconds >= target);
+        expect(notesFrom(before)[0]).toEqual([next[0].note, expect.closeTo(playAt + START_DELAY_SECONDS + next[0].startTimeSeconds - target, 9)]);
+        expect(notesFrom(before).length).toBeGreaterThan(0);
+        expect(notesFrom(before).some(([, start]) => start < playAt + START_DELAY_SECONDS - 1e-9)).toBe(false);
+    });
+
+    it('grabbing the line while playing pauses the piano; it goes on only with the play button, from where the line was left', async () => {
+        vi.spyOn(PianoPlayer, 'isSupported').mockReturnValue(true);
+        const { container, getByText, queryByText } = await loadSample();
+        const layout = layoutFor();
+        fireEvent.click(getByText('Play generated piano'));
+        await wait(() => expect(getByText('Pause piano')).toBeTruthy());
+        fakeAudioContext().currentTime = 1.1; // song time 1.0 s
+        runFrame();
+        expect(shownLine(container).y1).toBeCloseTo(playheadAt(layout, 1.0)!.line.y1, 6);
+
+        const target = layout.extraction.notes[8].timeSeconds - 0.02;
+        const release = dragLineTo(container, layout, target);
+        await wait(() => expect(getByText('Play generated piano')).toBeTruthy());
+        expect(queryByText('Pause piano')).toBeNull();
+        await release();
+        // Still paused after letting go, with the line where it was dropped.
+        expect(fakeAudioContext().state).not.toBe('closed');
+        expect(getByText('Play generated piano')).toBeTruthy();
+        await wait(() => expect(shownLine(container).y1).toBeCloseTo(playheadAt(layout, target)!.line.y1, 9));
+
+        const before = fakeAudioContext().oscillators.length;
+        const resumeAt = fakeAudioContext().currentTime;
+        fireEvent.click(getByText('Play generated piano'));
+        await wait(() => expect(getByText('Pause piano')).toBeTruthy());
+        await advanceAudio(1);
+        const next = sequence().filter(e => e.startTimeSeconds >= target);
+        expect(notesFrom(before)[0]).toEqual([next[0].note, expect.closeTo(resumeAt + START_DELAY_SECONDS + next[0].startTimeSeconds - target, 9)]);
+    });
+
+    it('when the song ends the line goes back to the start; Restart always starts from the beginning', async () => {
+        vi.spyOn(PianoPlayer, 'isSupported').mockReturnValue(true);
+        // Timers that also follow real time, to jump to the end of the song.
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        const { container, getByText } = await loadSample();
+        const layout = layoutFor();
+        await dragLineTo(container, layout, 10)();
+        expect(shownLine(container).y1).toBeCloseTo(playheadAt(layout, 10)!.line.y1, 9);
+
+        const before = fakeAudioContext().oscillators.length;
+        const playAt = fakeAudioContext().currentTime;
+        fireEvent.click(getByText('Restart piano'));
+        await wait(() => expect(getByText('Pause piano')).toBeTruthy());
+        await advanceAudio(1);
+        expect(notesFrom(before)[0]).toEqual([sequence()[0].note, expect.closeTo(playAt + START_DELAY_SECONDS + sequence()[0].startTimeSeconds, 9)]);
+
+        // The end of the song (the player stops by itself).
+        fakeAudioContext().currentTime = 1000;
+        act(() => { vi.advanceTimersByTime(1000 * 1000); });
+        expect(getByText('Play generated piano')).toBeTruthy();
+        expect(shownLine(container).y1).toBeCloseTo(playheadAt(layout, 0)!.line.y1, 9);
+    });
+
+    it('a setting that stops the piano puts the line back at the start, drawn across the strips as they are now', async () => {
+        const { container, getByText, getByRole } = await loadSample();
+        const layout = layoutFor();
+        await dragLineTo(container, layout, 6)();
+        expect(shownLine(container).y1).toBeCloseTo(playheadAt(layout, 6)!.line.y1, 9);
+        fireEvent.click(getByText('Layout/Pagination'));
+        const panel = within(getByRole('tabpanel'));
+        fireEvent.click(panel.getByLabelText(/Horizontal/));
+        fireEvent.click(panel.getAllByText('Apply')[0]);
+        // The orientation doesn't change the sizes (no refit).
+        const horizontal = layoutFor({ ...fittedFormat(), stripOrientation: 'horizontal' });
+        const line = shownLine(container);
+        const expected = playheadAt(horizontal, 0)!.line;
+        // Horizontal strip: a vertical line at song time 0.
+        expect(line.x1).toBe(line.x2);
+        expect(line.x1).toBeCloseTo(expected.x1, 9);
+    });
+
+    it('deleting the first holes while stopped keeps the dragged line at the same point of the music', async () => {
+        const { container } = await loadSample();
+        const layout = layoutFor();
+        const notes = layout.extraction.notes;
+        const target = notes[10].timeSeconds;
+        await dragLineTo(container, layout, target)();
+        const first = notes.filter(n => n.timeSeconds === notes[0].timeSeconds).map(n => n.id);
+        const removed = layoutFor().extraction.notes.find(n => !first.includes(n.id))!.timeSeconds - notes[0].timeSeconds;
+        // Select the first hole(s) and delete them.
+        const circles = parseDxf(createDxf(layout.drawings[0])).circles;
+        const svg = container.querySelector('.mb-musicBoxSvgWrapper svg')!;
+        first.forEach(id => {
+            const circle = circles[layout.holeNotes[0].findIndex(n => n.id === id)];
+            fireEvent.click(svg, { clientX: circle.cx * PX_PER_MM, clientY: circle.cy * PX_PER_MM });
+        });
+        fireEvent.keyDown(document.body, { key: 'Delete' });
+        const after = computeMusicBoxLayout(loadSampleMidi(), THIRTY,
+            fitSingleStrip(loadSampleMidi(), THIRTY, DEFAULT_FORMAT, 'auto', new Set(first)), 'auto', new Set(first));
+        placeSheets(container);
+        // The same note is under the line.
+        const sameNote = after.extraction.notes.find(n => n.id === notes[10].id)!;
+        expect(sameNote.timeSeconds).toBeCloseTo(target - removed, 9);
+        expect(shownLine(container).y1).toBeCloseTo(playheadAt(after, sameNote.timeSeconds)!.line.y1, 9);
     });
 });

@@ -23,12 +23,24 @@
     overflow: visible;
 }
 
-/* Long vertical strips: the page stays short and the preview scrolls on its own. */
+/*
+ * Long strips: the page stays short and the preview scrolls on its own (both orientations). The
+ * gutter of the scrollbar is kept, so that nothing moves when it hides while playing.
+ */
 .mb-musicBoxSvgPages-limited {
     max-height: 75vh;
     overflow-y: auto;
+    scrollbar-gutter: stable;
     border: 1px solid var(--mb-line, #d8d8c9);
     border-radius: 4px;
+}
+
+/*
+ * While playing, the box scrolls with the playback line (from the code): the wheel or a finger on it
+ * scrolls the page instead, so the rest of the app can be scrolled freely.
+ */
+.mb-musicBoxSvgPages.mb-musicBoxSvgPages-following {
+    overflow: hidden;
 }
 
 /*
@@ -60,4 +72,54 @@
     fill: none;
     stroke: var(--mb-holeSelect, #1e9e54);
     stroke-width: 0.45;
+}
+
+/*
+ * Playback line: where the song is (only on screen, not part of the DXF). It crosses each hole when
+ * its note sounds; the round handles beyond the edges of the strip and a wide invisible band make it
+ * easy to grab.
+ */
+.mb-playheadLine {
+    stroke: var(--mb-playhead, #e8590c);
+    stroke-width: 0.5;
+    pointer-events: none;
+}
+
+.mb-playheadKnob {
+    fill: var(--mb-playhead, #e8590c);
+    pointer-events: none;
+}
+
+.mb-playheadHit {
+    stroke: transparent;
+    stroke-width: 4;
+    stroke-linecap: round;
+    cursor: grab;
+    /* A finger on the line drags it instead of scrolling the page. */
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+@media (pointer: coarse) {
+    .mb-playheadHit {
+        stroke-width: 7;
+    }
+}
+
+.mb-playheadDragging,
+.mb-playheadDragging .mb-playheadHit,
+.mb-playheadDragging svg {
+    cursor: grabbing !important;
+}
+
+/* A hole glows for a moment when the line crosses it. */
+.mb-playheadFlash {
+    fill: var(--mb-playhead, #e8590c);
+    pointer-events: none;
+    animation: mb-playheadFlash 0.6s ease-out forwards;
+}
+
+@keyframes mb-playheadFlash {
+    from { opacity: 0.85; }
+    to { opacity: 0; }
 }

@@ -1,6 +1,6 @@
 import MidiFile from '../model/MidiFile';
 import { IMusicBoxProfile } from '../model/IMusicBoxProfile';
-import { IMusicBoxSvgFormatOptions, sheetDimensionNames } from '../model/IMusicBoxSvgFormatOptions';
+import { IMusicBoxSvgFormatOptions, sheetDimensionNames, StripOrientation } from '../model/IMusicBoxSvgFormatOptions';
 import { MidiNote } from '../model/MidiConstants';
 import { extractMusicBoxNotes, IMusicBoxNote, INoteExtractionResult, TrackSelection } from './MusicBoxNotes';
 import { drawSheet, ISheetDrawing } from './SheetDrawing';
@@ -96,6 +96,10 @@ export interface IMusicBoxLayout {
     holeNotes: IMusicBoxNote[][];
     totalPaperLengthMm: number;
     messages: ILayoutMessage[];
+    /** Paper speed: a hole is at (time − page start) × this along its strip. */
+    millimetersPerSecond: number;
+    /** Orientation of the drawings (see {@link drawSheet}). */
+    stripOrientation: StripOrientation;
 }
 
 /**
@@ -424,6 +428,8 @@ export function computeMusicBoxLayout(
         holeNotes,
         totalPaperLengthMm: strips.reduce((total, strip) => total + strip.lengthMm, 0),
         messages,
+        millimetersPerSecond: profile.millimetersPerSecond,
+        stripOrientation: format.stripOrientation ?? 'horizontal',
     };
 }
 

@@ -7,6 +7,15 @@ const PLAYBACK_LOOKAHEAD_SECONDS = 0.5;
 const PLAYBACK_SCHEDULE_INTERVAL_MS = 100;
 
 /**
+ * Time between pressing play (or continue) and the first moment of the song: enough to schedule the
+ * first notes (they are scheduled right away, before the interface updates).
+ */
+export const START_DELAY_SECONDS = 0.1;
+
+/** Notes still ringing when the line is moved fade out this fast (a sudden stop clicks). */
+const SEEK_FADE_SECONDS = 0.015;
+
+/**
  * Gain applied to the mix before the limiter. Measured with the sample songs (offline render):
  * +13 to +16 dB louder than the previous 0.3 without limiter, peaks <= 0.82, no clipping.
  */
@@ -21,18 +30,30 @@ const NOISE_DURATION_SECONDS = 0.018;
 /** A plucked tine sounds at once. */
 const ATTACK_SECONDS = 0.002;
 
+/** One note of the sequence, and when it starts in the audio clock. */
+interface IScheduledNote {
+    startTime: number;
+    voice: IPianoVoice;
+    /** Played by dragging the line (`scrub`): it rings to its end, whatever the line does next. */
+    scrub?: boolean;
+}
+
+/** A note to play right away (while the line is dragged). */
+export interface IScrubNote {
+    note: number;
+    velocity: number;
+}
+
 /**
  * Plays a sequence of notes with a small synthesizer (Web Audio API) voiced like a music box (the
  * interface still calls it "piano"). The song is played once: at the end it stops by itself.
  * Notes are scheduled a little ahead of time in small batches, so that long songs don't
- * create thousands of audio nodes at once.
+ * create thousands of audio nodes at once, and each note is disconnected once it has finished.
+ *
+ * The playback position is the song time (seconds, as in the sequence) heard at the moment: the
+ * preview draws the line there. While paused it can be moved (`seek`), and `resume` goes on from
+ * the new position.
  */
-/** The audio sources of one note of the sequence, and when it starts in the audio clock. */
-interface IScheduledNote {
-    startTime: number;
-    sources: AudioScheduledSourceNode[];
-}
-
 export default class PianoPlayer {
     private audioContext: AudioContext | null = null;
     private scheduledNotes: IScheduledNote[] = [];
@@ -41,8 +62,13 @@ export default class PianoPlayer {
 
     private pendingEvents: IGeneratedMusicBoxEvent[] = [];
     private pendingIndex = 0;
+    /** Audio clock time of song time 0. */
     private startTime = 0;
     private endTime = 0;
+    /** Song time where the playback started: the position never goes back before it. */
+    private playFrom = 0;
+    /** Position chosen while paused (the line was moved); null if it wasn't moved. */
+    private seekPosition: number | null = null;
 
     private completionTimer: number | null = null;
     private scheduleTimer: number | null = null;
@@ -63,14 +89,20 @@ export default class PianoPlayer {
         return !!getAudioContextConstructor();
     }
 
-    /** Plays the sequence from the start (stopping anything playing). */
-    public async play(sequence: IGeneratedMusicBoxEvent[]): Promise<void> {
+    /**
+     * Plays the sequence (stopping anything playing), from the song time `fromSeconds`: the notes
+     * before it are skipped, a note exactly there is played.
+     */
+    public async play(sequence: IGeneratedMusicBoxEvent[], fromSeconds = 0): Promise<void> {
         await this.runExclusive(async () => {
-            this.stopSources();
+            // The notes the line was just dragged over (stopped) ring to their end.
+            this.stopSources(this.state === 'stopped');
+            this.seekPosition = null;
             const generation = this.generation;
 
             const AudioCtor = getAudioContextConstructor();
             if (!sequence.length || !AudioCtor) {
+                this.stopSources();
                 this.setState('stopped');
                 return;
             }
@@ -84,17 +116,10 @@ export default class PianoPlayer {
                 return; // Stopped while waiting for the audio device.
             }
 
-            const output = createOutputChain(context);
-
+            this.output = this.output ?? createOutputChain(context);
+            this.noiseBuffer = this.noiseBuffer ?? createPianoNoiseBuffer(context);
             this.pendingEvents = sequence;
-            this.pendingIndex = 0;
-            this.startTime = context.currentTime + PLAYBACK_LOOKAHEAD_SECONDS;
-            this.endTime = this.startTime + getPlaybackDuration(sequence);
-            this.output = output;
-            this.noiseBuffer = createPianoNoiseBuffer(context);
-
-            this.scheduleEvents();
-            this.scheduleCompletion();
+            this.startFrom(fromSeconds);
             this.setState('playing');
         });
     }
@@ -114,6 +139,7 @@ export default class PianoPlayer {
         });
     }
 
+    /** Goes on after a pause: from where it was, or from where the line was moved (`seek`). */
     public async resume(): Promise<void> {
         await this.runExclusive(async () => {
             if (this.state !== 'paused' || !this.audioContext) {
@@ -124,10 +150,84 @@ export default class PianoPlayer {
             if (generation !== this.generation) {
                 return;
             }
-            this.scheduleEvents();
-            this.scheduleCompletion();
+            if (this.seekPosition !== null) {
+                const from = this.seekPosition;
+                this.seekPosition = null;
+                this.startFrom(from);
+            } else {
+                this.scheduleEvents();
+                this.scheduleCompletion();
+            }
             this.setState('playing');
         });
+    }
+
+    /**
+     * The song time being heard (the line of the preview): null when stopped. While playing it
+     * accounts for the audio device's latency, and never goes back before where playback started.
+     */
+    public getPosition(): number | null {
+        const context = this.audioContext;
+        if (this.state === 'stopped' || !context) {
+            return null;
+        }
+        if (this.state === 'paused') {
+            // The audio clock is stopped while paused (unless the line was moved).
+            return this.seekPosition ?? context.currentTime - this.startTime;
+        }
+        return Math.max(this.playFrom, heardTime(context) - this.startTime);
+    }
+
+    /**
+     * Moves the playback position while paused (the line was dragged): the notes still ringing fade
+     * out, and `resume` plays from `seconds`. Does nothing unless paused.
+     */
+    public seek(seconds: number): void {
+        const context = this.audioContext;
+        if (this.state !== 'paused' || this.busy || !context || !Number.isFinite(seconds)) {
+            return;
+        }
+        const now = context.currentTime;
+        // Only the song's notes: the ones played by dragging ring to their end (moving the line on
+        // must not cut them).
+        this.scheduledNotes.forEach(note => {
+            if (!note.scrub) {
+                fadeOutVoice(note.voice, now);
+            }
+        });
+        this.seekPosition = seconds;
+    }
+
+    /**
+     * Plays these notes right away, once (the line was dragged over their holes), without changing
+     * the playback state. Only when stopped, or paused after the line was moved: a plain pause keeps
+     * the song's notes waiting in the stopped audio clock, and they must not sound.
+     */
+    public async scrub(notes: IScrubNote[]): Promise<void> {
+        const AudioCtor = getAudioContextConstructor();
+        const allowed = this.state === 'stopped' || (this.state === 'paused' && this.seekPosition !== null);
+        if (!notes.length || !allowed || this.busy || !AudioCtor) {
+            return;
+        }
+        this.audioContext = this.audioContext ?? new AudioCtor();
+        const context = this.audioContext;
+        const generation = this.generation;
+        const state = this.state;
+        if (context.state === 'suspended') {
+            await context.resume();
+        }
+        if (generation !== this.generation || state !== this.state || this.busy) {
+            return; // Played, stopped or paused meanwhile.
+        }
+        this.output = this.output ?? createOutputChain(context);
+        this.noiseBuffer = this.noiseBuffer ?? createPianoNoiseBuffer(context);
+        const now = context.currentTime;
+        this.releaseFinishedNotes(now);
+        notes.forEach(note => this.scheduledNotes.push({
+            startTime: now,
+            voice: createPianoNote(context, this.output!.input, note.note, now, note.velocity, this.noiseBuffer!),
+            scrub: true,
+        }));
     }
 
     /**
@@ -144,8 +244,15 @@ export default class PianoPlayer {
         if (this.state === 'stopped' || !context || !this.output) {
             return;
         }
+        if (this.seekPosition !== null) {
+            // Paused after moving the line: resume() plays the new sequence from that position.
+            this.seekPosition -= shiftSeconds;
+            this.pendingEvents = sequence;
+            return;
+        }
         // Song time 0 moves later (or earlier) in the audio clock by the same amount.
         this.startTime += shiftSeconds;
+        this.playFrom -= shiftSeconds;
         // While paused the audio clock is stopped, so this is the paused position.
         const now = context.currentTime;
         const hasStarted = (startTime: number) => startTime <= now;
@@ -155,7 +262,7 @@ export default class PianoPlayer {
             if (hasStarted(note.startTime)) {
                 return true;
             }
-            stopNoteSources(note.sources);
+            releaseVoice(note.voice);
             return false;
         });
 
@@ -179,12 +286,15 @@ export default class PianoPlayer {
     public stop(): void {
         this.generation++;
         this.stopSources();
+        this.seekPosition = null;
         this.setState('stopped');
     }
 
     /** Stops playback and releases the audio device. */
     public dispose(): void {
+        this.generation++;
         this.stopSources();
+        this.seekPosition = null;
         if (this.audioContext) {
             this.audioContext.close().catch(() => undefined);
             this.audioContext = null;
@@ -211,11 +321,28 @@ export default class PianoPlayer {
         }
     }
 
+    /** Starts the pending events from the song time `from`, START_DELAY_SECONDS from now. */
+    private startFrom(from: number): void {
+        const context = this.audioContext!;
+        const events = this.pendingEvents;
+        this.playFrom = from;
+        this.startTime = context.currentTime + START_DELAY_SECONDS - from;
+        this.pendingIndex = 0;
+        while (this.pendingIndex < events.length && events[this.pendingIndex].startTimeSeconds < from) {
+            this.pendingIndex++;
+        }
+        this.endTime = Math.max(context.currentTime + START_DELAY_SECONDS, this.startTime + getPlaybackDuration(events));
+        this.scheduleEvents();
+        this.scheduleCompletion();
+    }
+
     private scheduleEvents(): void {
         const context = this.audioContext;
         if (!context || !this.output || !this.noiseBuffer) {
             return;
         }
+
+        this.releaseFinishedNotes(context.currentTime);
 
         const scheduleUntil = context.currentTime - this.startTime + PLAYBACK_LOOKAHEAD_SECONDS;
 
@@ -227,7 +354,7 @@ export default class PianoPlayer {
             const startTime = this.startTime + event.startTimeSeconds;
             this.scheduledNotes.push({
                 startTime,
-                sources: createPianoNote(context, this.output.input, event.note, startTime, event.velocity, this.noiseBuffer),
+                voice: createPianoNote(context, this.output.input, event.note, startTime, event.velocity, this.noiseBuffer),
             });
             this.pendingIndex++;
         }
@@ -260,32 +387,92 @@ export default class PianoPlayer {
         }
     }
 
-    private stopSources(): void {
+    /**
+     * Disconnects the notes that have finished ringing. Without this, every note of the song stayed
+     * connected to the mix until the end: the audio thread kept processing thousands of silent
+     * nodes, more and more as the song went on, until it couldn't keep up (crackling, first on
+     * phones). Measured in Chrome with a dense song: from 10% to 71% of the audio thread's capacity
+     * after 2 minutes, with the same number of notes ringing; with this, it stays at 12-15%.
+     */
+    private releaseFinishedNotes(now: number): void {
+        this.scheduledNotes = this.scheduledNotes.filter(note => {
+            if (note.voice.endTime > now) {
+                return true;
+            }
+            releaseVoice(note.voice);
+            return false;
+        });
+    }
+
+    /**
+     * Silences and disconnects every note. With `keepScrub`, the notes played by dragging the line
+     * keep ringing (and the mix they go through stays).
+     */
+    private stopSources(keepScrub = false): void {
         this.clearTimers();
 
-        this.scheduledNotes.forEach(note => stopNoteSources(note.sources));
-        this.scheduledNotes = [];
+        const kept = keepScrub ? this.scheduledNotes.filter(note => note.scrub) : [];
+        this.scheduledNotes.forEach(note => {
+            if (!kept.includes(note)) {
+                releaseVoice(note.voice);
+            }
+        });
+        this.scheduledNotes = kept;
 
-        if (this.output) {
+        if (this.output && kept.length === 0) {
             this.output.disconnect();
             this.output = null;
+            this.noiseBuffer = null;
         }
 
         this.pendingEvents = [];
         this.pendingIndex = 0;
-        this.noiseBuffer = null;
     }
 }
 
-function stopNoteSources(sources: AudioScheduledSourceNode[]): void {
-    sources.forEach((source) => {
+/**
+ * The audio clock time being heard now: the device plays the audio a little after it is computed
+ * (`currentTime`). Uses the output timestamp when the browser provides it.
+ */
+function heardTime(context: AudioContext): number {
+    const stamp = typeof context.getOutputTimestamp === 'function' ? context.getOutputTimestamp() : null;
+    if (stamp && stamp.contextTime !== undefined && stamp.performanceTime !== undefined && stamp.performanceTime > 0 &&
+        typeof performance !== 'undefined') {
+        const elapsed = Math.max(0, (performance.now() - stamp.performanceTime) / 1000);
+        return Math.min(context.currentTime, stamp.contextTime + elapsed);
+    }
+    return context.currentTime;
+}
+
+/** Fades a note out from `now` (or makes sure it never starts) and ends it. */
+function fadeOutVoice(voice: IPianoVoice, now: number): void {
+    if (voice.endTime <= now + SEEK_FADE_SECONDS) {
+        return; // Finished, or already fading.
+    }
+    const gain = voice.output.gain;
+    gain.cancelScheduledValues(now);
+    gain.setValueAtTime(1, now);
+    gain.linearRampToValueAtTime(0, now + SEEK_FADE_SECONDS);
+    voice.sources.forEach(source => {
+        try {
+            source.stop(now + SEEK_FADE_SECONDS);
+        } catch {
+            // Already finished.
+        }
+    });
+    voice.endTime = now + SEEK_FADE_SECONDS;
+}
+
+/** Silences a note (if it hasn't finished) and disconnects all its nodes from the mix. */
+function releaseVoice(voice: IPianoVoice): void {
+    voice.sources.forEach((source) => {
         try {
             source.stop();
         } catch {
             // A source may already have finished naturally.
         }
-        source.disconnect();
     });
+    voice.nodes.forEach(node => node.disconnect());
 }
 
 /** Time from the start of the sequence until its last note has finished ringing. */
@@ -369,6 +556,18 @@ export function createOutputChain(context: BaseAudioContext): IOutputChain {
     };
 }
 
+/** The audio nodes of one note. */
+export interface IPianoVoice {
+    /** Its oscillators and noise burst. */
+    sources: AudioScheduledSourceNode[];
+    /** Every node of the note (sources included), to disconnect it from the mix. */
+    nodes: AudioNode[];
+    /** The note's own volume (1), to fade it out. */
+    output: GainNode;
+    /** When the note has stopped sounding, in the audio clock. */
+    endTime: number;
+}
+
 export function createPianoNote(
     context: BaseAudioContext,
     destination: AudioNode,
@@ -376,7 +575,7 @@ export function createPianoNote(
     startTime: number,
     velocity: number,
     noiseBuffer: AudioBuffer
-): AudioScheduledSourceNode[] {
+): IPianoVoice {
     const fundamental = midiToFrequency(midiNote);
     const velocityGain = 0.18 + 0.6 * (velocity / 127);
     const baseDecay = getBaseDecaySeconds(midiNote);
@@ -386,6 +585,8 @@ export function createPianoNote(
     noteGain.connect(destination);
 
     const sources: AudioScheduledSourceNode[] = [];
+    const nodes: AudioNode[] = [noteGain];
+    let endTime = startTime;
 
     PARTIALS.forEach((partial) => {
         const frequency = fundamental * partial.mult;
@@ -407,9 +608,12 @@ export function createPianoNote(
         osc.connect(partialGain);
         partialGain.connect(noteGain);
 
+        const stopTime = startTime + ATTACK_SECONDS + decay + 0.05;
         osc.start(startTime);
-        osc.stop(startTime + ATTACK_SECONDS + decay + 0.05);
+        osc.stop(stopTime);
         sources.push(osc);
+        nodes.push(osc, partialGain);
+        endTime = Math.max(endTime, stopTime);
     });
 
     // Short bandpass-filtered noise burst approximating the click of the pluck.
@@ -428,11 +632,13 @@ export function createPianoNote(
     noiseSource.connect(noiseFilter);
     noiseFilter.connect(noiseGain);
     noiseGain.connect(noteGain);
+    const noiseStopTime = startTime + NOISE_DURATION_SECONDS + 0.01;
     noiseSource.start(startTime);
-    noiseSource.stop(startTime + NOISE_DURATION_SECONDS + 0.01);
+    noiseSource.stop(noiseStopTime);
     sources.push(noiseSource);
+    nodes.push(noiseSource, noiseFilter, noiseGain);
 
-    return sources;
+    return { sources, nodes, output: noteGain, endTime: Math.max(endTime, noiseStopTime) };
 }
 
 export function createPianoNoiseBuffer(context: BaseAudioContext): AudioBuffer {
