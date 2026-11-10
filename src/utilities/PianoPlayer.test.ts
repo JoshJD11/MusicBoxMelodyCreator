@@ -1,4 +1,4 @@
-import PianoPlayer, { PlaybackState } from './PianoPlayer';
+import PianoPlayer, { createPianoNote, PlaybackState } from './PianoPlayer';
 import { IGeneratedMusicBoxEvent } from './MusicBoxMidi';
 
 /**
@@ -141,6 +141,44 @@ describe('PianoPlayer', () => {
         expect(states).toEqual(['playing', 'stopped']);
     });
 
+    it('plays the song only once: after the end nothing is scheduled until play is pressed again', async () => {
+        await player.play(SONG);
+        advance(10);
+        expect(player.getState()).toBe('stopped');
+        const played = scheduledNotes().length;
+        expect(played).toBe(SONG.length);
+
+        // Long after the end: still stopped, and no note was scheduled again.
+        advance(60);
+        expect(scheduledNotes().length).toBe(played);
+        expect(states).toEqual(['playing', 'stopped']);
+
+        // Pressing play again plays it once more, from the start.
+        const secondStart = context.currentTime + 0.5;
+        await player.play(SONG);
+        advance(10);
+        expect(scheduledNotes().length).toBe(2 * played);
+        expect(scheduledNotes().slice(played).map(n => [n.note, Math.round((n.start - secondStart) * 1000) / 1000]))
+            .toEqual(SONG.map(e => [e.note, e.startTimeSeconds]));
+        expect(player.getState()).toBe('stopped');
+    });
+
+    it('voices each note like a music box tine: sine partials, the last one a bright inharmonic overtone', () => {
+        const audio = new FakeAudioContext();
+        const noise = audio.createBuffer(1, 10);
+        createPianoNote(audio as unknown as BaseAudioContext, audio.destination as unknown as AudioNode,
+            69, 1, 100, noise as unknown as AudioBuffer);
+        expect(audio.oscillators.map(o => o.type)).toEqual(['sine', 'sine', 'sine', 'sine']);
+        expect(audio.oscillators.map(o => Math.round(o.frequency.value * 100) / 100)).toEqual([440, 880, 1320, 2758.8]);
+        expect(audio.oscillators.every(o => o.startAt === 1)).toBe(true);
+
+        // Partials above half the sample rate (which can't be reproduced) are left out.
+        const high = new FakeAudioContext();
+        createPianoNote(high as unknown as BaseAudioContext, high.destination as unknown as AudioNode,
+            108, 0, 100, noise as unknown as AudioBuffer); // C8: 4186 Hz
+        expect(high.oscillators.map(o => Math.round(o.frequency.value))).toEqual([4186, 8372, 12558]);
+    });
+
     it('updates the song while playing without restarting it: started notes keep sounding, the rest come from the new song', async () => {
         await player.play(SONG);
         const songStart = 0.5;
@@ -156,6 +194,36 @@ describe('PianoPlayer', () => {
         expect(audibleNotes(songStart)).toEqual([[60, 0], [62, 0.5], [64, 1.0], [67, 2.0], [69, 2.5]]);
         // No note was played twice.
         expect(scheduledNotes().filter(n => n.note === 64).length).toBe(1);
+        expect(player.getState()).toBe('stopped');
+    });
+
+    it('when the first notes are deleted while playing (the song now starts later), it stays at the same point of the music', async () => {
+        await player.play(SONG);
+        const songStart = 0.5;
+        advance(1.2); // song position 0.7 s: 60 and 62 have sounded, 64 (1.0 s) is scheduled
+
+        // 60 and 62 are deleted: the song now starts at 64, so every note is 1 s earlier.
+        const shifted = SONG.slice(2).map(e => ({ ...e, startTimeSeconds: e.startTimeSeconds - 1 }));
+        player.updateSequence(shifted, 1);
+        advance(10);
+        // Nothing skipped, nothing played twice: the same notes at the same moments.
+        expect(audibleNotes(songStart)).toEqual(SONG.map(e => [e.note, e.startTimeSeconds]));
+        expect(scheduledNotes().filter(n => !n.stopped).length).toBe(SONG.length);
+        expect(player.getState()).toBe('stopped');
+    });
+
+    it('when the first notes come back while paused (undo), resume goes on from the same point of the music', async () => {
+        const withoutFirst = SONG.slice(1).map(e => ({ ...e, startTimeSeconds: e.startTimeSeconds - 0.5 }));
+        await player.play(withoutFirst); // starts with 62 at 0 s
+        const songStart = 0.5;
+        advance(1.2); // position 0.7 s of this song (62 and 64 have sounded, 65 at 1.0 s is scheduled)
+        await player.pause();
+
+        player.updateSequence(SONG, -0.5);
+        await player.resume();
+        advance(10);
+        // In the restored song, 60 would be at -0.5 s (already past): it is not played.
+        expect(audibleNotes(songStart)).toEqual(withoutFirst.map(e => [e.note, e.startTimeSeconds]));
         expect(player.getState()).toBe('stopped');
     });
 

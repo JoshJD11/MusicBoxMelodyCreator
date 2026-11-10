@@ -293,7 +293,61 @@ describe('holes deleted by hand', () => {
 
     it('the piano does not play the deleted holes', () => {
         const file = midiFile();
-        const piano = buildGeneratedMusicBoxSequence(file, THIRTY, { transposeOutOfRangeNotes: true, deletedNoteIds: new Set(['1:0', '1:4']) });
-        expect(piano.map(e => [e.note, e.startTimeSeconds])).toEqual([[64, 0.5]]);
+        const piano = buildGeneratedMusicBoxSequence(file, THIRTY, { transposeOutOfRangeNotes: true, deletedNoteIds: new Set(['1:2']) });
+        expect(piano.map(e => [e.note, e.startTimeSeconds])).toEqual([[60, 0], [67, 1]]);
+    });
+
+    const deleting = (file: MidiFile, ids: string[]) =>
+        extractMusicBoxNotes(file, THIRTY, { transposeOutOfRangeNotes: true, deletedNoteIds: new Set(ids) });
+
+    it('deleting the first holes moves every other hole back by the same time: the song starts at the first hole left', () => {
+        const file = load([melody([60, 62, 64, 65, 67])]); // 0, 0.5, 1, 1.5, 2 s
+        const all = punched(file).notes;
+        expect(punched(file).removedLeadingSeconds).toBe(0);
+
+        const result = deleting(file, [all[0].id, all[1].id]);
+        expect(result.removedLeadingSeconds).toBeCloseTo(1, 9);
+        expect(result.notes.map(n => n.id)).toEqual([all[2].id, all[3].id, all[4].id]);
+        expect(result.notes.map(n => n.timeSeconds)).toEqual(all.slice(2).map(n => n.timeSeconds - result.removedLeadingSeconds));
+        expect(result.notes[0].timeSeconds).toBeCloseTo(0, 9);
+        // Only the time moves; everything else about the notes is the same.
+        result.notes.forEach((note, i) => expect({ ...note, timeSeconds: 0 }).toEqual({ ...all[i + 2], timeSeconds: 0 }));
+
+        // The piano plays the same: the song starts with the first hole left.
+        const piano = buildGeneratedMusicBoxSequence(file, THIRTY, { transposeOutOfRangeNotes: true, deletedNoteIds: new Set([all[0].id, all[1].id]) });
+        expect(piano.map(e => e.startTimeSeconds)).toEqual(result.notes.map(n => n.timeSeconds));
+    });
+
+    it('keeps the silence of the file before its first note: only the room of the deleted holes is removed', () => {
+        // 1 s of silence, then C4, E4, G4 every 0.5 s.
+        const file = load([[noteOn(TICKS_PER_SECOND, 60, 100), noteOff(240, 60), noteOn(240, 64, 100), noteOff(240, 64),
+            noteOn(240, 67, 100), noteOff(240, 67), endOfTrack()]]);
+        const all = punched(file).notes;
+        expect(all.map(n => n.timeSeconds)).toEqual([1, 1.5, 2]);
+        const result = deleting(file, [all[0].id]);
+        expect(result.removedLeadingSeconds).toBeCloseTo(0.5, 9);
+        expect(result.notes.map(n => n.timeSeconds)).toEqual([1, 1.5]);
+    });
+
+    it('moves nothing when a note at the same time as the first one is left, or when only later holes are deleted', () => {
+        // A chord at 0 s (C4 + E4), then G4 at 0.5 s.
+        const chord = load([[noteOn(0, 60, 100), noteOn(0, 64, 100), noteOff(480, 60), noteOff(0, 64),
+            noteOn(0, 67, 100), noteOff(480, 67), endOfTrack()]]);
+        const all = punched(chord).notes;
+        const withoutC = deleting(chord, [all[0].id]);
+        expect(withoutC.removedLeadingSeconds).toBe(0);
+        expect(withoutC.notes).toEqual(all.slice(1));
+
+        const file = midiFile();
+        const later = deleting(file, ['1:2', '1:4']);
+        expect(later.removedLeadingSeconds).toBe(0);
+        expect(later.notes).toEqual([punched(file).notes[0]]);
+    });
+
+    it('moves nothing when every hole is deleted', () => {
+        const file = midiFile();
+        const result = deleting(file, ['1:0', '1:2', '1:4']);
+        expect(result.notes).toEqual([]);
+        expect(result.removedLeadingSeconds).toBe(0);
     });
 });

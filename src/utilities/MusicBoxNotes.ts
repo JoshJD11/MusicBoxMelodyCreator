@@ -26,8 +26,9 @@ export interface INoteExtractionOptions {
 
     /**
      * Holes deleted by hand ({@link IMusicBoxNote.id}). They are removed after every other step, so
-     * that deleting a hole never makes another one appear or move (e.g. a note that was skipped for
-     * being too close to it stays skipped).
+     * that deleting a hole never makes another one appear (e.g. a note that was skipped for being
+     * too close to it stays skipped). Deleting the first holes moves all the others back by the same
+     * time (see {@link INoteExtractionResult.removedLeadingSeconds}); nothing else moves.
      */
     deletedNoteIds?: ReadonlySet<string>;
 }
@@ -84,6 +85,12 @@ export interface INoteExtractionResult {
 
     /** Holes deleted by hand (see {@link INoteExtractionOptions.deletedNoteIds}). */
     deletedCount: number;
+
+    /**
+     * Time removed from the start of the song because its first holes were deleted by hand: every
+     * note left is this much earlier than in the file (0 when the first hole is still there).
+     */
+    removedLeadingSeconds: number;
 }
 
 export interface ITrackSummary {
@@ -179,6 +186,7 @@ export function extractMusicBoxNotes(
         tooCloseCount: 0,
         percussionCount: 0,
         deletedCount: 0,
+        removedLeadingSeconds: 0,
     };
 
     // 1. Collect note starts (with their durations) of the selected tracks.
@@ -278,16 +286,26 @@ export function extractMusicBoxNotes(
 
     // 4. Holes deleted by hand, last: nothing else changes because of them.
     const deleted = options.deletedNoteIds;
-    result.notes = kept.filter((note): note is IMusicBoxNote => {
-        if (note === null) {
-            return false;
-        }
+    const punched = kept.filter((note): note is IMusicBoxNote => note !== null);
+    result.notes = punched.filter(note => {
         if (deleted && deleted.has(note.id)) {
             result.deletedCount++;
             return false;
         }
         return true;
     });
+
+    // 5. If the first holes were deleted, the song starts at the first hole left: every hole moves
+    //    back by the same time (decision of the user), so the strip has no blank paper where the
+    //    deleted holes were. Distances between holes don't change, and the silence of the file
+    //    before its first note is kept (it is part of the music).
+    if (result.notes.length > 0 && result.notes[0] !== punched[0]) {
+        const shift = result.notes[0].timeSeconds - punched[0].timeSeconds;
+        if (shift > 0) {
+            result.removedLeadingSeconds = shift;
+            result.notes = result.notes.map(note => ({ ...note, timeSeconds: note.timeSeconds - shift }));
+        }
+    }
     return result;
 }
 

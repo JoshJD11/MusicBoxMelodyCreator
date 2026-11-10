@@ -795,9 +795,9 @@ describe('MusicBoxSheetGenerator: deleting holes in the preview', () => {
         const { container, getByText, getByRole } = await loadSample();
         const ids = layoutFor().extraction.notes.map(n => n.id);
         const total = ids.length;
-        clickHole(container, layoutFor(), ids[0]);
+        clickHole(container, layoutFor(), ids[3]);
         fireEvent.click(getByText('Delete 1 hole'));
-        clickHole(container, layoutFor([ids[0]]), ids[1]);
+        clickHole(container, layoutFor([ids[3]]), ids[4]);
 
         fireEvent.click(getByText('Layout/Pagination'));
         const input = numericInput(within(getByRole('tabpanel')).getByText(/Start padding/));
@@ -848,12 +848,54 @@ describe('MusicBoxSheetGenerator: deleting holes in the preview', () => {
         expect(await downloadAll(getByText)).toEqual(layoutFor(last, typed).drawings.map(createDxf));
     });
 
+    it('deleting the first holes moves the rest back: no blank paper at the start, the fitted sheet gets shorter, the piano stays in place', async () => {
+        vi.spyOn(PianoPlayer, 'isSupported').mockReturnValue(true);
+        const updates: Array<[unknown, number | undefined]> = [];
+        vi.spyOn(PianoPlayer.prototype, 'updateSequence').mockImplementation((sequence, shift) => { updates.push([sequence, shift]); });
+        vi.spyOn(PianoPlayer.prototype, 'getState').mockReturnValue('playing');
+
+        const { container, getByText, getByRole } = await loadSample();
+        const sizes = () => {
+            fireEvent.click(getByText('Layout/Pagination'));
+            const panel = within(getByRole('tabpanel'));
+            return [numericInput(panel.getByText(/Max strip length/)).value, numericInput(panel.getByText(/Sheet width/)).value];
+        };
+        const notes = layoutFor().extraction.notes;
+        const times = [...new Set(notes.map(n => n.timeSeconds))];
+        const first = notes.filter(n => n.timeSeconds === times[0]).map(n => n.id);
+        const removed = times[1] - times[0];
+        const midi = loadSampleMidi();
+        const shorter = fitSingleStrip(midi, THIRTY, DEFAULT_FORMAT, 'auto', new Set(first));
+        expect(shorter.pageWidthMm).toBeLessThan(fittedFormat().pageWidthMm);
+
+        first.forEach(id => clickHole(container, layoutFor(), id));
+        key('Delete');
+        expect(sizes()).toEqual([String(shorter.pageWidthMm), '70.1']);
+        const after = layoutFor(first, shorter);
+        expect(after.extraction.removedLeadingSeconds).toBeCloseTo(removed, 9);
+        expect(await downloadAll(getByText)).toEqual(after.drawings.map(createDxf));
+        // The piano gets the notes moved back, and is told so (it stays at the same point of the music).
+        const pianoWithout = (deleted: string[]) => buildGeneratedMusicBoxSequence(midi, THIRTY,
+            { transposeOutOfRangeNotes: true, includePercussion: false, trackSelection: 'auto', deletedNoteIds: new Set(deleted) });
+        expect(updates.length).toBe(1);
+        expect(updates[0][0]).toEqual(pianoWithout(first));
+        expect(updates[0][1]).toBeCloseTo(removed, 9);
+
+        // Undo: the whole song again, from the same start, and the piano moves forward again.
+        key('z', { ctrlKey: true });
+        expect(sizes()).toEqual([String(fittedFormat().pageWidthMm), '70.1']);
+        expect(await downloadAll(getByText)).toEqual(layoutFor().drawings.map(createDxf));
+        expect(updates[1][0]).toEqual(pianoWithout([]));
+        expect(updates[1][1]).toBeCloseTo(-removed, 9);
+    });
+
     it('the piano never plays deleted holes; while playing or paused it goes on with the new notes', async () => {
         vi.spyOn(PianoPlayer, 'isSupported').mockReturnValue(true);
         const played: unknown[] = [];
         vi.spyOn(PianoPlayer.prototype, 'play').mockImplementation(async (sequence) => { played.push(sequence); });
         const updated: unknown[] = [];
-        vi.spyOn(PianoPlayer.prototype, 'updateSequence').mockImplementation((sequence) => { updated.push(sequence); });
+        const shifts: unknown[] = [];
+        vi.spyOn(PianoPlayer.prototype, 'updateSequence').mockImplementation((sequence, shift) => { updated.push(sequence); shifts.push(shift); });
         const state = vi.spyOn(PianoPlayer.prototype, 'getState').mockReturnValue('stopped');
 
         const { container, getByText } = await loadSample();
@@ -875,6 +917,7 @@ describe('MusicBoxSheetGenerator: deleting holes in the preview', () => {
         clickHole(container, layoutFor([ids[2]]), ids[6]);
         key('Delete');
         expect(updated).toEqual([pianoWithout([ids[2], ids[6]])]);
+        expect(shifts).toEqual([0]);
         // Paused too, and undo brings the note back to the piano.
         state.mockReturnValue('paused');
         key('z', { ctrlKey: true });

@@ -61,8 +61,9 @@ Run it again if you move the project folder.
 
 `samples/happy_birthday.mid` and `samples/You are my sunshine.mid` come from the original project.
 `samples/ode_to_joy.mid` is an arrangement of Beethoven's "Ode to Joy" (public domain) made for the
-tests of this project. `samples/ode_to_joy.mp3` is that same arrangement rendered with the app's piano
-synthesizer, to try the (experimental) MP3 support and compare it with the MIDI file.
+tests of this project. `samples/ode_to_joy.mp3` is that same arrangement rendered with the app's
+synthesizer (with the piano sound it had before the music box sound), to try the (experimental) MP3
+support and compare it with the MIDI file.
 
 ## License
 
@@ -117,3 +118,11 @@ Changes made by [JoshJD11] on [2026-11-09]:
   1.6 s, and a note still ringing at the start of a window looked like a new attack).
 - MP3: audio of certain lengths (26-28 s, 52-54 s, 79-80 s... about one in 16) failed with "Failed to
   compile fragment shader" (a TensorFlow.js bug); the audio is now cut into windows without it.
+- The sound preview is voiced like a music box (a plucked metal tine: a pure ringing tone with a
+  short bright "ting") instead of a piano. As before, it plays the punched notes once and stops.
+- Deleting the first holes of the song now removes the blank paper they leave: the rest of the strip
+  moves back as a block (distances between holes don't change), the first hole left takes the place
+  of the first one, and a sheet fitted to the song gets shorter. The piano follows (also while
+  playing, without skipping notes). The silence of a MIDI file before its first note is kept.
+- A long file name no longer overflows the preview panel (it ends in "…"; the full name is shown on
+  hover), and the note histogram is no longer cut off on narrow screens.

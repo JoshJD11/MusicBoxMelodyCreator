@@ -2,8 +2,8 @@
 
 Aplicación web (React + TypeScript) que convierte archivos MIDI (y MP3, de forma **experimental**) en
 **tiras de papel perforado para cajas musicales de mecanismo de papel** (perfiles de 15 y 30 notas). Genera archivos **DXF** que se cortan con
-una Silhouette Cameo 5 en Silhouette Studio, y permite escuchar con un piano sintetizado exactamente lo
-que se va a perforar.
+una Silhouette Cameo 5 en Silhouette Studio, y permite escuchar exactamente lo que se va a perforar, con
+un sintetizador con timbre de caja musical (la interfaz lo sigue llamando "piano").
 
 Fork GPLv3 de [SabinT/musicbox-svg](https://github.com/SabinT/musicbox-svg). El proyecto está en la raíz
 del repositorio. El archivo `notes` contiene apuntes del usuario sobre el corte (presión, profundidad,
@@ -155,22 +155,43 @@ archivo .mid
     anillo verdes. Borrar: botón, Backspace o Supr. Esc / "Unselect" quitan la selección. Deshacer:
     botón o Ctrl+Z / ⌘Z, un paso cada vez; "Restore all" también es un paso que se puede deshacer. No hay
     rehacer. Las teclas no actúan mientras se escribe en un campo (ahí editan el texto).
-  - Lo borrado se quita **al final** de `extractMusicBoxNotes`: borrar un agujero nunca hace aparecer ni
-    mover otro (una nota descartada por estar demasiado cerca sigue descartada). Solo pueden moverse los
-    cortes entre tiras (se ponen entre notas). Si se borran todos: error que explica Undo / Restore all, y
-    la barra sigue visible.
+  - Lo borrado se quita **al final** de `extractMusicBoxNotes`: borrar un agujero nunca hace aparecer
+    otro (una nota descartada por estar demasiado cerca sigue descartada). Borrar agujeros del medio o del
+    final no mueve ningún otro; solo pueden moverse los cortes entre tiras (se ponen entre notas). Si se
+    borran todos: error que explica Undo / Restore all, y la barra sigue visible.
+  - **Borrar los primeros agujeros** (pedido por el usuario): la canción empieza en el primero que queda.
+    Todas las notas restantes se adelantan el mismo tiempo (`removedLeadingSeconds`, paso 5 de
+    `extractMusicBoxNotes`), así que la primera que queda ocupa el lugar de la primera original (mismo
+    margen inicial) y la tira no tiene papel en blanco al inicio. Desplazamiento rígido: no cambian las
+    distancias entre agujeros, ni sus líneas, ni sus ids. Solo se quita el hueco de lo borrado: el silencio
+    del archivo antes de su primera nota se conserva (como siempre en los MIDI). Si queda otra nota en el
+    mismo instante que la primera (acorde), no se mueve nada. Como está en la extracción, la tira, el DXF,
+    `fitSingleStrip` y el piano lo heredan juntos. Sin borrar nada la salida es idéntica byte a byte
+    (comprobado: DXF de los 3 samples, 2 perfiles, 4 formatos, con y sin auto-tamaño, y secuencias del
+    piano).
   - Lo borrado pertenece al archivo cargado: se conserva al cambiar perfil, papel, pista o layout; se
     olvida al cargar otro archivo (o el mismo) y al volver a detectar las notas de un MP3 (barras), que lo
     avisa en su panel. El MIDI JSON no cambia.
   - Tamaño de la hoja (decisión del usuario): si estaba ajustada a la canción (sus tamaños son los de
-    `fitSingleStrip` antes del cambio), se reajusta (borrar las últimas notas la acorta); los tamaños
+    `fitSingleStrip` antes del cambio), se reajusta (borrar las primeras o las últimas notas la acorta); los tamaños
     escritos a mano se respetan. `fitSingleStrip` y todos los reajustes descuentan lo borrado.
   - Piano (decisión del usuario): si está sonando o en pausa **sigue desde donde va** con las notas nuevas
     (`PianoPlayer.updateSequence`: cancela las notas aún no empezadas y las vuelve a programar desde la
-    nueva secuencia; las que ya sonaron siguen). Los demás cambios de ajustes siguen deteniéndolo.
-- **Audio** (`PianoPlayer.ts`): ganancia 1.0 → limitador (−12 dB, 20:1, ataque 1 ms) → altavoces. Está
-  medido con render offline de los samples: +13 a +16 dB respecto a la versión original y pico ≤ 0.82,
-  sin saturación. Si cambias la cadena, vuelve a medir.
+    nueva secuencia; las que ya sonaron siguen). Si cambia `removedLeadingSeconds` (se borran o vuelven
+    los primeros agujeros), la app le pasa la diferencia y el piano mueve su inicio lo mismo, para seguir
+    en el mismo punto de la música (sin saltarse ni repetir notas). Los demás cambios de ajustes siguen
+    deteniéndolo.
+- **Audio** (`PianoPlayer.ts`): suena **una sola vez** y se detiene sola al final (el botón vuelve a
+  "Play generated piano"; hay test). **Timbre de caja musical** (pedido por el usuario; antes eran 4
+  ondas triangulares, tipo piano): cada nota son 4 senoidales (`PARTIALS`): fundamental que resuena, un
+  poco de 2.º y 3.er armónico (para que los graves se oigan en altavoces pequeños) y el primer sobretono
+  de una lengüeta de acero (6.27× la fundamental, no armónico), que se apaga casi al instante: el "ting"
+  del punteo. Ataque de 2 ms; las duraciones no cambiaron; los parciales por encima de la mitad de la
+  frecuencia de muestreo se omiten. No se pudo comparar de oído con la referencia del usuario (un video
+  de R3 Music Box): está hecho con la física de la lengüeta; si pide ajustes, se tocan `PARTIALS`.
+  Cadena: ganancia 1.0 → limitador (−12 dB, 20:1, ataque 1 ms) → altavoces. Medido con render offline
+  de los 3 samples (15 y 30 notas): pico 0.69–0.75 y −12.9 a −13.5 dB RMS, sin saturación (con el
+  timbre de piano: pico 0.71–0.81 y −14.0 a −14.5 dB). Si cambias el timbre o la cadena, vuelve a medir.
 - **Ajustes con Apply**: los paneles de ajustes se mantienen montados (ocultos) al cambiar de pestaña,
   para que los cambios sin aplicar no se pierdan. Si
   hay cambios sin aplicar se avisa en el panel (Apply / Discard) y junto a Download, porque la vista
@@ -223,7 +244,9 @@ archivo .mid
   - Límite de 6 min de audio (memoria en móviles: ~250 MB de pico a 6 min). Textos en la interfaz (pedidos
     por el usuario): MP3 es experimental, un MIDI siempre es preferible, y una melodía de piano o un solo
     instrumento es la mejor entrada.
-  - `samples/ode_to_joy.mp3` es `ode_to_joy.mid` renderizado con el piano de la app (dominio público).
+  - `samples/ode_to_joy.mp3` es `ode_to_joy.mid` renderizado con el piano de la app (dominio público),
+    con el timbre de piano anterior al de caja musical; las medidas de esta sección se hicieron con ese
+    timbre. No se ha vuelto a generar.
   - Tests: `BasicPitchTranscriber.test.ts` corre el **modelo real** (CPU, ~20 s) con tonos sintéticos;
     la prueba de extremo a extremo simula decodificación y modelo, pero usa la detección real de Basic
     Pitch. En jsdom el prefijo de Blueprint es `undefined-` (no `bp3-`). Para re-medir con otras canciones:
@@ -231,7 +254,14 @@ archivo .mid
     activaciones en Chrome y evaluar variantes offline (ver la memoria del proyecto).
 - **UI**: siempre en **una sola columna** (preferencia del usuario). La barra de botones de la vista
   previa se centra con márgenes automáticos: si no cabe (teléfono) empieza a la izquierda y se desplaza
-  (con `align-items: center` el primer botón quedaba cortado e inalcanzable). `MusicBoxSheetGenerator.tsx` (componente raíz). Los editores de perfil y formato validan con
+  (con `align-items: center` el primer botón quedaba cortado e inalcanzable). **Nombres largos**: el
+  título del panel de la vista previa termina en "…" (nombre completo en `title`); un hijo flex con texto
+  necesita `min-width: 0` para poder encogerse (sin eso, el título y la etiqueta "DXF PREVIEW" se salían
+  del panel). El histograma de notas lleva `viewBox` para encogerse entero en pantallas estrechas (antes
+  se cortaban las notas más agudas). Comprobado en Chrome a 320, 360, 412, 768 y 1280 px con nombres de
+  archivo y de pista muy largos (con y sin espacios), en las 3 pestañas, con error de carga y con un MP3:
+  ningún elemento se sale de su contenedor ni de la pantalla (los únicos que se desplazan a propósito son
+  la barra de botones, la vista previa y el MIDI JSON). `MusicBoxSheetGenerator.tsx` (componente raíz). Los editores de perfil y formato validan con
   `validateMusicBoxProfile` / `validateFormatOptions`. Pestañas: MIDI / MP3 File, Paper/Music Box Settings y
   Layout/Pagination. La vista 3D experimental (disco Fisher-Price con three.js) se eliminó por decisión
   del usuario: el proyecto es solo para tiras de papel.

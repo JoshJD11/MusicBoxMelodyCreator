@@ -20,7 +20,11 @@ import { IMusicBoxSvgFormatOptions, shouldRefitSheet } from "./model/IMusicBoxSv
 import { BuiltInProfiles, IMusicBoxProfile } from "./model/IMusicBoxProfile";
 import MidiJsonConverter from "./utilities/MidiJsonConverter";
 import { buildGeneratedMusicBoxSequence, IGeneratedMusicBoxEvent } from "./utilities/MusicBoxMidi";
-import { TrackSelection } from "./utilities/MusicBoxNotes";
+import {
+  extractMusicBoxNotes,
+  INoteExtractionOptions,
+  TrackSelection,
+} from "./utilities/MusicBoxNotes";
 import { computeMusicBoxLayout, fitSingleStrip } from "./utilities/MusicBoxLayout";
 import { createDxf } from "./utilities/DxfExporter";
 import PianoPlayer, { PlaybackState } from "./utilities/PianoPlayer";
@@ -241,6 +245,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
     if (holeEdits === this.state.holeEdits) {
       return;
     }
+    const removedBefore = this.removedLeadingSeconds();
     this.setState(
       (state) => ({
         holeEdits,
@@ -249,7 +254,10 @@ export default class MusicBoxSheetGenerator extends React.Component<
       }),
       () => {
         if (this.player.getState() !== "stopped") {
-          this.player.updateSequence(this.buildPianoSequence());
+          // Deleting (or bringing back) the first holes moves the song in time: the piano stays at
+          // the same point of the music.
+          const shiftSeconds = this.removedLeadingSeconds() - removedBefore;
+          this.player.updateSequence(this.buildPianoSequence(), shiftSeconds);
         }
       }
     );
@@ -400,7 +408,7 @@ export default class MusicBoxSheetGenerator extends React.Component<
               <div className="mb-panelHeading">
                 <div>
                   <p className="mb-eyebrow">PAPER SCORE</p>
-                  <h2>{this.state.fileName}</h2>
+                  <h2 title={this.state.fileName}>{this.state.fileName}</h2>
                 </div>
                 <span className="mb-pageTag">DXF PREVIEW</span>
               </div>
@@ -593,16 +601,26 @@ export default class MusicBoxSheetGenerator extends React.Component<
       return [];
     }
     return buildGeneratedMusicBoxSequence(
-      this.state.midiFile,
-      this.state.musicBoxProfile,
-      {
-        transposeOutOfRangeNotes:
-          this.state.musicBoxSvgFormatOptions.transposeOutOfRangeNotes,
-        includePercussion: this.state.musicBoxSvgFormatOptions.includePercussion,
-        trackSelection: this.state.trackSelection,
-        deletedNoteIds: this.state.holeEdits.deleted,
-      }
-    );
+      this.state.midiFile, this.state.musicBoxProfile, this.noteExtractionOptions());
+  }
+
+  /** Time removed from the start of the song because its first holes were deleted. */
+  private removedLeadingSeconds(): number {
+    if (!this.state.midiFile) {
+      return 0;
+    }
+    return extractMusicBoxNotes(
+      this.state.midiFile, this.state.musicBoxProfile, this.noteExtractionOptions()).removedLeadingSeconds;
+  }
+
+  private noteExtractionOptions(): INoteExtractionOptions {
+    return {
+      transposeOutOfRangeNotes:
+        this.state.musicBoxSvgFormatOptions.transposeOutOfRangeNotes,
+      includePercussion: this.state.musicBoxSvgFormatOptions.includePercussion,
+      trackSelection: this.state.trackSelection,
+      deletedNoteIds: this.state.holeEdits.deleted,
+    };
   }
 
   private toggleDebugMessage(): void {

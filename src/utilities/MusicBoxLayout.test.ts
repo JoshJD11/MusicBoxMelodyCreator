@@ -457,11 +457,13 @@ describe('holes deleted by hand', () => {
             const midiFile = loadSample(sample);
             const before = computeMusicBoxLayout(midiFile, profile, unlimited);
             const notes = before.extraction.notes;
-            // The first hole, one in the middle and one near the end (not the last: the length stays).
-            const deleted = new Set([notes[0].id, notes[Math.floor(notes.length / 2)].id, notes[notes.length - 2].id]);
+            // The second hole, one in the middle and one near the end (not the first or the last: the
+            // start and the length stay).
+            const deleted = new Set([notes[1].id, notes[Math.floor(notes.length / 2)].id, notes[notes.length - 2].id]);
             const after = computeMusicBoxLayout(midiFile, profile, unlimited, 'auto', deleted);
 
             expect(after.extraction.deletedCount).toBe(3);
+            expect(after.extraction.removedLeadingSeconds).toBe(0);
             expect(after.extraction.notes).toEqual(notes.filter(n => !deleted.has(n.id)));
             const expected = before.holeNotes[0]
                 .map((note, j) => ({ note, circle: circlesOf(before)[0][j] }))
@@ -473,14 +475,53 @@ describe('holes deleted by hand', () => {
         });
     });
 
+    SAMPLES.forEach(sample => {
+        it(`${sample}: deleting the first holes moves every other hole back as a block, so the strip has no blank paper at the start`, () => {
+            const midiFile = loadSample(sample);
+            const before = computeMusicBoxLayout(midiFile, profile, unlimited);
+            const notes = before.extraction.notes;
+            // Every hole at the first two times of the song.
+            const times = [...new Set(notes.map(n => n.timeSeconds))];
+            const deleted = new Set(notes.filter(n => n.timeSeconds <= times[1]).map(n => n.id));
+            const after = computeMusicBoxLayout(midiFile, profile, unlimited, 'auto', deleted);
+
+            const shiftMm = (times[2] - times[0]) * profile.millimetersPerSecond;
+            expect(after.extraction.removedLeadingSeconds).toBeCloseTo(times[2] - times[0], 9);
+            const holesBefore = before.holeNotes[0]
+                .map((note, j) => ({ note, circle: circlesOf(before)[0][j] }))
+                .filter(({ note }) => !deleted.has(note.id));
+            const holesAfter = circlesOf(after)[0];
+            expect(after.holeNotes[0].map(n => n.id)).toEqual(holesBefore.map(({ note }) => note.id));
+            // Same line, same size; along the strip every hole moves back by the same distance.
+            holesAfter.forEach((circle, j) => {
+                const old = holesBefore[j].circle;
+                expect(circle.cx).toBeCloseTo(old.cx - shiftMm, 6);
+                expect(circle.cy).toBe(old.cy);
+                expect(circle.r).toBe(old.r);
+            });
+            // The first hole left is exactly where the first hole was: the start padding is the same.
+            expect(Math.min(...holesAfter.map(c => c.cx))).toBeCloseTo(Math.min(...circlesOf(before)[0].map(c => c.cx)), 6);
+            expect(after.totalPaperLengthMm).toBeCloseTo(before.totalPaperLengthMm - shiftMm, 6);
+            expectPhysicallyValid(after, profile, unlimited);
+
+            // A sheet fitted to the song gets shorter by the same length (rounded up to the mm).
+            const fitted = fitSingleStrip(midiFile, profile, FORMAT);
+            const shorter = fitSingleStrip(midiFile, profile, FORMAT, 'auto', deleted);
+            expect(shorter.pageWidthMm).toBe(Math.ceil(after.totalPaperLengthMm));
+            expect(fitted.pageWidthMm - shorter.pageWidthMm).toBeGreaterThanOrEqual(Math.floor(shiftMm));
+        });
+    });
+
     it('stays physically valid with deleted holes, also on several strips and sheets', () => {
         const midiFile = loadSample('ode_to_joy.mid');
         const all = extractMusicBoxNotes(midiFile, profile, { transposeOutOfRangeNotes: true }).notes;
-        const deleted = new Set(all.filter((_, i) => i % 7 === 3).map(n => n.id));
+        // Also the first holes (the song starts later).
+        const deleted = new Set(all.filter((_, i) => i < 5 || i % 7 === 3).map(n => n.id));
         ['default', 'letter190x277', 'narrow85', 'jigsaw', 'vertical277x190', 'verticalMirrored'].forEach(key => {
             const format = FORMAT_VARIANTS[key];
             const layout = computeMusicBoxLayout(midiFile, profile, format, 'auto', deleted);
             expect(layout.extraction.deletedCount).toBe(deleted.size);
+            expect(layout.extraction.removedLeadingSeconds).toBeGreaterThan(0);
             expectPhysicallyValid(layout, profile, format);
         });
     });

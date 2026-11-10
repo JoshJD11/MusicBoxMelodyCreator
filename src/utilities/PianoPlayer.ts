@@ -15,11 +15,15 @@ export const MASTER_GAIN = 1.0;
 /** Limiter that keeps chords from clipping after the gain. */
 export const LIMITER = { thresholdDb: -12, kneeDb: 0, ratio: 20, attackSeconds: 0.001, releaseSeconds: 0.1 };
 
-/** Duration of the hammer noise burst at the start of each note. */
+/** Duration of the noise burst at the start of each note (the click of the pluck). */
 const NOISE_DURATION_SECONDS = 0.018;
 
+/** A plucked tine sounds at once. */
+const ATTACK_SECONDS = 0.002;
+
 /**
- * Plays a sequence of notes with a small synthesized piano (Web Audio API).
+ * Plays a sequence of notes with a small synthesizer (Web Audio API) voiced like a music box (the
+ * interface still calls it "piano"). The song is played once: at the end it stops by itself.
  * Notes are scheduled a little ahead of time in small batches, so that long songs don't
  * create thousands of audio nodes at once.
  */
@@ -130,12 +134,18 @@ export default class PianoPlayer {
      * Replaces the notes of the song that is playing or paused, without moving the playback
      * position (e.g. after deleting holes): the notes that have already started keep sounding, and
      * the following ones are played from the new sequence. Does nothing when stopped.
+     *
+     * `shiftSeconds`: how much earlier every note of the new sequence is than the same note in the
+     * old one (the first holes were deleted and the song now starts later in the file; negative
+     * when they are brought back). The playback position stays at the same point of the music.
      */
-    public updateSequence(sequence: IGeneratedMusicBoxEvent[]): void {
+    public updateSequence(sequence: IGeneratedMusicBoxEvent[], shiftSeconds = 0): void {
         const context = this.audioContext;
         if (this.state === 'stopped' || !context || !this.output) {
             return;
         }
+        // Song time 0 moves later (or earlier) in the audio clock by the same amount.
+        this.startTime += shiftSeconds;
         // While paused the audio clock is stopped, so this is the paused position.
         const now = context.currentTime;
         const hasStarted = (startTime: number) => startTime <= now;
@@ -313,14 +323,21 @@ function getBaseDecaySeconds(midiNote: number): number {
 
 /** How long a note rings (attack + decay of its fundamental). */
 export function getPianoReleaseSeconds(midiNote: number): number {
-    return Math.max(0.18, getBaseDecaySeconds(midiNote)) + 0.006;
+    return Math.max(0.18, getBaseDecaySeconds(midiNote)) + ATTACK_SECONDS;
 }
 
+/**
+ * Voiced like the comb of a music box. Each tine is a steel bar clamped at one end and plucked by a
+ * pin: an almost pure tone that rings (sine waves, with a little of the 2nd and 3rd harmonics so
+ * that low notes are still heard on small speakers), plus the bar's first overtone, which is not a
+ * harmonic (6.27 times the fundamental for an ideal bar) and fades almost at once: the bright
+ * "ting" of the pluck.
+ */
 const PARTIALS: Array<{ mult: number; amp: number; decayScale: number }> = [
     { mult: 1, amp: 1.0, decayScale: 1.0 },
-    { mult: 2, amp: 0.5, decayScale: 0.72 },
-    { mult: 3, amp: 0.26, decayScale: 0.52 },
-    { mult: 4.01, amp: 0.16, decayScale: 0.38 },
+    { mult: 2, amp: 0.25, decayScale: 0.6 },
+    { mult: 3, amp: 0.08, decayScale: 0.4 },
+    { mult: 6.27, amp: 0.3, decayScale: 0.15 },
 ];
 
 export interface IOutputChain {
@@ -371,28 +388,31 @@ export function createPianoNote(
     const sources: AudioScheduledSourceNode[] = [];
 
     PARTIALS.forEach((partial) => {
+        const frequency = fundamental * partial.mult;
+        if (frequency >= context.sampleRate / 2) {
+            return; // Above what the audio device can reproduce.
+        }
         const osc = context.createOscillator();
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(fundamental * partial.mult, startTime);
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(frequency, startTime);
 
         const partialGain = context.createGain();
-        const attack = partial.mult === 1 ? 0.006 : 0.003;
         const decay = Math.max(0.18, baseDecay * partial.decayScale);
         const peak = velocityGain * partial.amp * 0.45;
 
         partialGain.gain.setValueAtTime(0.0001, startTime);
-        partialGain.gain.exponentialRampToValueAtTime(peak, startTime + attack);
-        partialGain.gain.exponentialRampToValueAtTime(0.0001, startTime + attack + decay);
+        partialGain.gain.exponentialRampToValueAtTime(peak, startTime + ATTACK_SECONDS);
+        partialGain.gain.exponentialRampToValueAtTime(0.0001, startTime + ATTACK_SECONDS + decay);
 
         osc.connect(partialGain);
         partialGain.connect(noteGain);
 
         osc.start(startTime);
-        osc.stop(startTime + attack + decay + 0.05);
+        osc.stop(startTime + ATTACK_SECONDS + decay + 0.05);
         sources.push(osc);
     });
 
-    // Short bandpass-filtered noise burst approximating the hammer strike.
+    // Short bandpass-filtered noise burst approximating the click of the pluck.
     const noiseSource = context.createBufferSource();
     noiseSource.buffer = noiseBuffer;
 

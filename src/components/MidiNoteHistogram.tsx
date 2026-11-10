@@ -68,7 +68,9 @@ export default function MidiNoteHistogram(props: IMidiNoteHistogramProps) {
     const yScale = (props.height - 20) / maxNoteCount;
 
     return (
-        <svg width={props.width} height={props.height} >
+        // The viewBox makes the drawing shrink with the svg on narrow screens (without it, the right
+        // side, i.e. the highest notes, was cut off).
+        <svg width={props.width} height={props.height} viewBox={`0 0 ${props.width} ${props.height}`}>
             <g transform={'translate(0 20) scale(1 ' + yScale + ')'}>
                 {bars}
             </g>
