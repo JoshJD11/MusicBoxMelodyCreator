@@ -12,8 +12,10 @@ import { computeMusicBoxLayout } from '../utilities/MusicBoxLayout';
 import { playheadAt } from '../utilities/Playhead';
 import { IDxfDrawing, parseDxf } from '../utilities/DxfReader';
 import { createDxf } from '../utilities/DxfExporter';
-import { ISheetDrawing } from '../utilities/SheetDrawing';
-import { IMusicBoxLayout } from '../utilities/MusicBoxLayout';
+import { ISheetDrawing, placeStripLine } from '../utilities/SheetDrawing';
+import { getNoteLinePositions, IMusicBoxLayout } from '../utilities/MusicBoxLayout';
+import { midiNoteName } from '../model/MidiConstants';
+import { sheetNoteGuides, snapToNoteLine, TOO_CLOSE_REASON } from '../utilities/NoteGuides';
 
 const SHEET: ISheetDrawing = {
     widthMm: 200,
@@ -489,5 +491,230 @@ describe('DxfPreview: playback line', () => {
         // Paused: the box can be scrolled by hand again.
         rerender(<DxfPreview files={{ layout, dxfs }} paperWidthMm={70.1} limitHeight={true} playhead={{ ...playhead, playing: false }} />);
         expect(box.classList.contains('mb-musicBoxSvgPages-following')).toBe(false);
+    });
+});
+
+describe('DxfPreview: note lines and adding holes', () => {
+    const PX_PER_MM = 10;
+    const SHEET_GAP_PX = 100;
+    const profile = BuiltInProfiles.thirtyNote;
+
+    function loadOde() {
+        const b = fs.readFileSync(path.resolve(__dirname, '../../samples/ode_to_joy.mid'));
+        const midi = new MidiFile();
+        midi.loadFromBuffer(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength));
+        return midi;
+    }
+
+    // Several sheets with several vertical strips each.
+    const layout = computeMusicBoxLayout(loadOde(), profile, {
+        pageWidthMm: 277, pageHeightMm: 190, startPaddingMm: 10, renderBorder: true, omitPageBoundaries: false,
+        transposeOutOfRangeNotes: true, jigsawJoiners: false, loopMode: false, stripOrientation: 'vertical',
+    });
+    const dxfs = layout.drawings.map(createDxf);
+    const notes = layout.extraction.notes;
+    const positions = getNoteLinePositions(profile);
+
+    /** jsdom has no layout: sheet k is drawn at 10 px per mm, one below the other. */
+    function placeSheets(container: HTMLElement) {
+        let top = 0;
+        container.querySelectorAll('.mb-musicBoxSvgWrapper svg').forEach((element, k) => {
+            const svg = element as SVGSVGElement;
+            const drawing = layout.drawings[k];
+            const rect = { left: 0, top, x: 0, y: top, width: drawing.widthMm * PX_PER_MM, height: drawing.heightMm * PX_PER_MM };
+            const bottom = top + rect.height;
+            svg.getBoundingClientRect = () => ({ ...rect, right: rect.width, bottom, toJSON: () => ({}) }) as DOMRect;
+            top += rect.height + SHEET_GAP_PX;
+        });
+    }
+    /** Screen position of a point (mm) of sheet 0. */
+    const screen = (x: number, y: number) => ({ clientX: x * PX_PER_MM, clientY: y * PX_PER_MM });
+    /** The point of sheet 0 where a hole of `note` at song time `seconds` would be (first strip). */
+    function pointOf(note: number, seconds: number) {
+        const sheet = layout.sheets[0];
+        const along = (seconds - layout.pages[0].startTimeInSeconds) * profile.millimetersPerSecond;
+        const across = positions.get(note)!;
+        const line = placeStripLine(sheet, sheet.strips[0], { x1: along, y1: across, x2: along, y2: across }, 'vertical');
+        return { x: line.x1, y: line.y1 };
+    }
+    /** A note with no hole within a second of `seconds` on the first strip. */
+    const freeNote = (seconds: number) => [...profile.supportedNotes].sort((a, b) => b - a).find(note =>
+        !notes.some(n => n.note === note && Math.abs(n.timeSeconds - seconds) < 1))!;
+    const ghost = (container: HTMLElement) => container.querySelector('.mb-noteGhost');
+
+    function renderPreview(props: Partial<React.ComponentProps<typeof DxfPreview>> = {}) {
+        const onHoleClick = vi.fn();
+        const onAddHole = vi.fn();
+        const onAddBlocked = vi.fn();
+        const utils = render(<DxfPreview files={{ layout, dxfs }} paperWidthMm={70.1} limitHeight={true}
+            onHoleClick={onHoleClick} onAddHole={onAddHole} onAddBlocked={onAddBlocked} {...props} />);
+        placeSheets(utils.container);
+        const svg = utils.container.querySelector('.mb-musicBoxSvgWrapper svg') as SVGSVGElement;
+        return { ...utils, svg, onHoleClick, onAddHole, onAddBlocked };
+    }
+
+    it('draws a line per note of the box along every strip, with its name before the leading edge, without touching the DXF shapes', () => {
+        const { container } = renderPreview();
+        const strips = layout.sheets.reduce((count, sheet) => count + sheet.strips.length, 0);
+        expect(container.querySelectorAll('.mb-noteLine').length).toBe(strips * profile.supportedNotes.length);
+        expect(container.querySelectorAll('.mb-noteLine-landmark').length).toBe(strips * profile.supportedNotes.filter(n => n % 12 === 0).length);
+        const names = Array.from(container.querySelectorAll('.mb-musicBoxSvgWrapper svg')[0].querySelectorAll('.mb-noteGuides > g:first-child .mb-noteLabel')).map(t => t.textContent);
+        expect(names).toEqual([...profile.supportedNotes].sort((a, b) => a - b).map(midiNoteName));
+        expect(names).toContain('C4');
+        expect(names).toContain('F#4');
+        // Room for the names before the strips (vertical: above them).
+        expect(container.querySelectorAll('.mb-musicBoxSvgWrapper-guides-vertical').length).toBe(layout.drawings.length);
+        // The shapes of the DXF are exactly the same.
+        layout.drawings.forEach((drawing, s) => {
+            const svg = container.querySelectorAll('.mb-musicBoxSvgWrapper svg')[s];
+            expect(svg.querySelectorAll('circle[stroke="black"]').length).toBe(layout.holeNotes[s].length);
+            expect(svg.querySelectorAll('line[stroke="black"]').length).toBe(drawing.strips.reduce((n, strip) => n + strip.lines.length, 0));
+        });
+        // The beats of the file across the strips: as many as the guides say, by kind.
+        const guides = layout.drawings.flatMap((_, s) => sheetNoteGuides(layout, s));
+        const count = (kind: string) => guides.reduce((n, strip) => n + strip.beats.filter(b => b.kind === kind).length, 0);
+        expect(container.querySelectorAll('.mb-beatLine-quarter').length).toBe(count('quarter'));
+        expect(container.querySelectorAll('.mb-beatLine-eighth').length).toBe(count('eighth'));
+        expect(container.querySelectorAll('.mb-beatLine').length).toBe(count('quarter') + count('eighth'));
+        expect(count('quarter')).toBeGreaterThan(10);
+        // The paper inside every hole hides the lines (one mask per hole of the DXF), under the DXF shapes.
+        layout.drawings.forEach((_, s) => {
+            const svg = container.querySelectorAll('.mb-musicBoxSvgWrapper svg')[s];
+            expect(svg.querySelectorAll('.mb-holeMask').length).toBe(layout.holeNotes[s].length);
+        });
+        // They can be hidden, separately.
+        const hidden = render(<DxfPreview files={{ layout, dxfs }} paperWidthMm={70.1} onAddHole={vi.fn()} showNoteLines={false} showBeatLines={false} />);
+        expect(hidden.container.querySelector('.mb-noteGuides')).toBeNull();
+        expect(hidden.container.querySelector('.mb-musicBoxSvgWrapper-guides-vertical')).toBeNull();
+        const beatsOnly = render(<DxfPreview files={{ layout, dxfs }} paperWidthMm={70.1} onAddHole={vi.fn()} showNoteLines={false} />);
+        expect(beatsOnly.container.querySelectorAll('.mb-noteLine').length).toBe(0);
+        expect(beatsOnly.container.querySelectorAll('.mb-beatLine-quarter').length).toBe(count('quarter'));
+        // And are not drawn when holes can't be added, unless asked for.
+        const plain = render(<DxfPreview files={{ layout, dxfs }} paperWidthMm={70.1} />);
+        expect(plain.container.querySelector('.mb-noteGuides')).toBeNull();
+        const asked = render(<DxfPreview files={{ layout, dxfs }} paperWidthMm={70.1} showNoteLines={true} />);
+        expect(asked.container.querySelectorAll('.mb-noteLine').length).toBe(strips * profile.supportedNotes.length);
+    });
+
+    it('a ghost hole follows the mouse over empty paper, on the nearest note line with its name; not over a hole, nor off the sheet', () => {
+        const { container, svg } = renderPreview();
+        const seconds = (notes[5].timeSeconds + notes[6].timeSeconds) / 2;
+        const note = freeNote(seconds);
+        const point = pointOf(note, seconds);
+        // A little off the line: the ghost snaps to it.
+        fireEvent.pointerMove(svg, { pointerType: 'mouse', ...screen(point.x + 0.6, point.y) });
+        const snap = snapToNoteLine(layout, 0, point.x + 0.6, point.y)!;
+        expect(snap.note).toBe(note);
+        expect(snap.blocked).toBeUndefined();
+        const g = ghost(container)!;
+        expect(g).not.toBeNull();
+        expect(Number(g.getAttribute('cx'))).toBeCloseTo(snap.cx, 9);
+        expect(Number(g.getAttribute('cy'))).toBeCloseTo(snap.cy, 9);
+        expect(Number(g.getAttribute('r'))).toBe(profile.holeDiameterMm / 2);
+        expect(g.classList.contains('mb-noteGhost-blocked')).toBe(false);
+        expect(container.querySelector('.mb-noteGhostName')!.textContent).toBe(midiNoteName(note));
+        // The distances to the neighbours on the line (vertical strips: up / down).
+        const mm = (value: number | null) => (value === null ? '–' : value.toFixed(1) + ' mm');
+        expect(container.querySelector('.mb-noteGhostGaps')!.textContent).toBe(`↑ ${mm(snap.gapBeforeMm)}  ↓ ${mm(snap.gapAfterMm)}`);
+        expect(container.querySelector('.mb-noteLine-hover')).not.toBeNull();
+        expect(container.querySelector('.mb-noteLabel-hover')!.textContent).toBe(midiNoteName(note));
+        expect(svg.style.cursor).toBe('crosshair');
+
+        // Over a hole: the ring, no ghost.
+        const circle = parseDxf(dxfs[0]).circles[5];
+        fireEvent.pointerMove(svg, { pointerType: 'mouse', ...screen(circle.cx, circle.cy) });
+        expect(ghost(container)).toBeNull();
+        expect(container.querySelector('.mb-hole-hover')).not.toBeNull();
+        expect(svg.style.cursor).toBe('pointer');
+
+        // On the sheet's margin, off the strips: nothing.
+        fireEvent.pointerMove(svg, { pointerType: 'mouse', ...screen(0.5, 0.5) });
+        expect(ghost(container)).toBeNull();
+        expect(svg.style.cursor).toBe('');
+
+        fireEvent.pointerMove(svg, { pointerType: 'mouse', ...screen(point.x, point.y) });
+        expect(ghost(container)).not.toBeNull();
+        fireEvent.pointerOut(svg, { relatedTarget: document.body });
+        expect(ghost(container)).toBeNull();
+    });
+
+    it('a click on empty paper adds the ghost hole (its note and song time); a click on a hole selects it instead', () => {
+        const { container, svg, onHoleClick, onAddHole, onAddBlocked } = renderPreview();
+        const seconds = (notes[5].timeSeconds + notes[6].timeSeconds) / 2;
+        const note = freeNote(seconds);
+        const point = pointOf(note, seconds);
+        fireEvent.pointerMove(svg, { pointerType: 'mouse', ...screen(point.x, point.y) });
+        fireEvent.pointerDown(svg, { pointerType: 'mouse', ...screen(point.x, point.y) });
+        fireEvent.click(svg, screen(point.x, point.y));
+        const snap = snapToNoteLine(layout, 0, point.x, point.y)!;
+        expect(onAddHole).toHaveBeenCalledTimes(1);
+        expect(onAddHole).toHaveBeenCalledWith(note, snap.seconds);
+        expect(snap.seconds).toBeCloseTo(seconds, 9);
+        expect(onHoleClick).not.toHaveBeenCalled();
+        expect(onAddBlocked).not.toHaveBeenCalled();
+        // The new hole takes the ghost's place.
+        expect(ghost(container)).toBeNull();
+
+        const circle = parseDxf(dxfs[0]).circles[7];
+        fireEvent.pointerDown(svg, { pointerType: 'mouse', ...screen(circle.cx + 0.5, circle.cy) });
+        fireEvent.click(svg, screen(circle.cx + 0.5, circle.cy));
+        expect(onHoleClick).toHaveBeenCalledWith(layout.holeNotes[0][7].id);
+        expect(onAddHole).toHaveBeenCalledTimes(1);
+    });
+
+    it('too close to a hole on the same line, the ghost is red and a click only explains why', () => {
+        const { container, svg, onAddHole, onAddBlocked } = renderPreview();
+        const hole = notes[3];
+        // 2.6 mm after the hole on its line: beyond its click margin (1.1 + 1.2 mm), within the minimum gap (3 mm).
+        const point = pointOf(hole.note, hole.timeSeconds + 2.6 / profile.millimetersPerSecond);
+        fireEvent.pointerMove(svg, { pointerType: 'mouse', ...screen(point.x, point.y) });
+        // Not within the hole's hit margin: a ghost, not the ring.
+        expect(container.querySelector('.mb-hole-hover')).toBeNull();
+        expect(ghost(container)!.classList.contains('mb-noteGhost-blocked')).toBe(true);
+        expect(svg.style.cursor).toBe('not-allowed');
+        fireEvent.pointerDown(svg, { pointerType: 'mouse', ...screen(point.x, point.y) });
+        fireEvent.click(svg, screen(point.x, point.y));
+        expect(onAddHole).not.toHaveBeenCalled();
+        expect(onAddBlocked).toHaveBeenCalledWith(TOO_CLOSE_REASON);
+    });
+
+    it('a tap adds a hole directly (no ghost on touch screens)', () => {
+        const { container, svg, onAddHole } = renderPreview();
+        const seconds = (notes[5].timeSeconds + notes[6].timeSeconds) / 2;
+        const note = freeNote(seconds);
+        const point = pointOf(note, seconds);
+        fireEvent.pointerMove(svg, { pointerType: 'touch', ...screen(point.x, point.y) });
+        expect(ghost(container)).toBeNull();
+        fireEvent.pointerDown(svg, { pointerType: 'touch', ...screen(point.x, point.y) });
+        fireEvent.click(svg, screen(point.x, point.y));
+        expect(onAddHole).toHaveBeenCalledWith(note, snapToNoteLine(layout, 0, point.x, point.y)!.seconds);
+    });
+
+    it('the playback line takes its own clicks and shows no ghost: pressing it never adds a hole', () => {
+        const seconds = (notes[5].timeSeconds + notes[6].timeSeconds) / 2;
+        const playhead: IPreviewPlayhead = { seconds, playing: false, getSeconds: () => null, onDragStart: vi.fn(), onDrag: vi.fn(), onDragEnd: vi.fn() };
+        const { container, onAddHole, onHoleClick } = renderPreview({ playhead });
+        const hit = container.querySelector('.mb-playheadHit')!;
+        const line = playheadAt(layout, seconds)!.line;
+        // On the line, over empty paper (the line is at a time between two notes).
+        const x = pointOf(freeNote(seconds), seconds).x;
+        fireEvent.pointerMove(hit, { pointerType: 'mouse', ...screen(x, line.y1) });
+        expect(ghost(container)).toBeNull();
+        fireEvent.pointerDown(hit, { pointerId: 1, pointerType: 'mouse', button: 0, ...screen(x, line.y1) });
+        fireEvent.pointerUp(hit, { pointerId: 1, pointerType: 'mouse', ...screen(x, line.y1) });
+        fireEvent.click(hit, screen(x, line.y1));
+        expect(onAddHole).not.toHaveBeenCalled();
+        expect(onHoleClick).not.toHaveBeenCalled();
+    });
+
+    it('is not drawn, and adds nothing, for a layout without strips', () => {
+        const onAddHole = vi.fn();
+        const { container } = render(<DxfPreview files={{ layout: LAYOUT, dxfs: [createDxf(SHEET)] }} paperWidthMm={70.1} onAddHole={onAddHole} />);
+        expect(container.querySelector('.mb-noteGuides')).not.toBeNull();
+        expect(container.querySelectorAll('.mb-noteLine').length).toBe(0);
+        const svg = container.querySelector('svg')!;
+        svg.getBoundingClientRect = () => ({ left: 0, top: 0, x: 0, y: 0, width: 2000, height: 2500, right: 2000, bottom: 2500, toJSON: () => ({}) });
+        fireEvent.click(svg, { clientX: 500, clientY: 500 });
+        expect(onAddHole).not.toHaveBeenCalled();
     });
 });

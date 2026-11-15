@@ -35,8 +35,9 @@ export interface IMidiFilePickerProps {
 
     trackSelection: TrackSelection;
     includePercussion: boolean;
-    /** Holes deleted by hand in the preview (the MP3 settings panel warns that they come back). */
+    /** Holes deleted / added by hand in the preview (the MP3 settings panel warns that those edits are dropped). */
     deletedHoleCount?: number;
+    addedHoleCount?: number;
     onTrackSelectionChange(selection: TrackSelection): void;
 }
 
@@ -299,6 +300,7 @@ export default class MidiFilePicker extends React.Component<IMidiFilePickerProps
                             noteCount={audio.noteCount}
                             trimmedSeconds={audio.trimmedSeconds}
                             deletedHoleCount={this.props.deletedHoleCount}
+                            addedHoleCount={this.props.addedHoleCount}
                             onChange={(settings) => this.changeAudioSettings(settings)}
                         />
                     )}

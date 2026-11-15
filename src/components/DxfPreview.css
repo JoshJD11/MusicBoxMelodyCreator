@@ -58,9 +58,10 @@
     pointer-events: none;
 }
 
+/* Under the mouse: a click removes the hole (decision of the user), so the ring is coral. */
 .mb-hole-hover {
-    fill: rgba(30, 158, 84, 0.14);
-    stroke: var(--mb-holeSelect, #1e9e54);
+    fill: rgba(197, 102, 77, 0.16);
+    stroke: var(--mb-coral, #c5664d);
     stroke-width: 0.5;
 }
 
@@ -122,4 +123,107 @@
 @keyframes mb-playheadFlash {
     from { opacity: 0.85; }
     to { opacity: 0; }
+}
+
+/*
+ * Note lines (like on musicbox.fun): one per note of the music box along every strip, exactly where
+ * its holes go, with the note's name before the strip's leading edge. Only on screen: the DXF never
+ * contains them. Lengths are in mm (the sheet's units). The names are written outside a sheet whose
+ * margin is 0: the wrapper leaves room for them before the strips' leading edges.
+ */
+.mb-musicBoxSvgWrapper-guides-vertical {
+    padding-top: 42px;
+}
+
+.mb-musicBoxSvgWrapper-guides-horizontal {
+    padding-left: 48px;
+}
+
+.mb-noteGuides,
+.mb-noteGhostLayer {
+    pointer-events: none;
+}
+
+/*
+ * Colors and widths of musicbox.fun (decision of the user): note lines and quarter notes black,
+ * eighth notes light gray (#c0c0c0), all 1 px on screen whatever the zoom; no sixteenth notes. The
+ * beats (from the file's tempo) go from the first note line to the last one.
+ */
+.mb-noteLine,
+.mb-beatLine {
+    stroke-width: 1px;
+    vector-effect: non-scaling-stroke;
+    shape-rendering: crispEdges;
+}
+
+/* Slightly lighter than musicbox.fun's black (decision of the user): the ghost hole and its label stand out. */
+.mb-noteLine,
+.mb-beatLine-quarter {
+    stroke: #000;
+    stroke-opacity: 0.7;
+}
+
+.mb-beatLine-eighth {
+    stroke: #c0c0c0;
+}
+
+/* Paper inside the holes: the lines stop at their edge, so the holes read as before. */
+.mb-holeMask {
+    fill: var(--mb-white, #fffdf7);
+}
+
+/* (The font size is set by the component, from NoteGuides.LABEL_FONT_MM.) */
+.mb-noteLabel {
+    font-family: "Avenir Next", "Trebuchet MS", sans-serif;
+    fill: var(--mb-muted, #727b70);
+}
+
+/* The line and name of the note under the mouse. */
+.mb-noteLine-hover {
+    stroke: rgba(30, 158, 84, 0.16);
+    stroke-width: 1.8;
+}
+
+.mb-noteLabel-hover {
+    font-weight: 700;
+    fill: var(--mb-holeSelect, #1e9e54);
+}
+
+/* The hole a click would add (red when it can't be punched there). */
+.mb-noteGhost {
+    fill: rgba(30, 158, 84, 0.28);
+    stroke: var(--mb-holeSelect, #1e9e54);
+    stroke-width: 0.18;
+    stroke-dasharray: 0.45 0.3;
+}
+
+.mb-noteGhost-blocked {
+    fill: rgba(197, 102, 77, 0.3);
+    stroke: var(--mb-coral, #c5664d);
+}
+
+/* The label of the ghost hole: name and distances, on paper, where it covers no hole. */
+.mb-noteGhostLabel {
+    fill: var(--mb-white, #fffdf7);
+    fill-opacity: 0.94;
+    stroke: var(--mb-holeSelect, #1e9e54);
+    stroke-width: 0.15;
+}
+
+.mb-noteGhostName,
+.mb-noteGhostGaps {
+    font-family: "Avenir Next", "Trebuchet MS", sans-serif;
+    font-weight: 700;
+    fill: var(--mb-ink, #263b37);
+}
+
+/* Distances to the previous / next hole on the line. (Sizes are set by the component.) */
+.mb-noteGhostGaps {
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Dragging the playback line never adds a hole: no ghost while it is dragged. */
+.mb-playheadDragging .mb-noteGhostLayer {
+    display: none;
 }

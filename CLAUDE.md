@@ -26,7 +26,7 @@ una nota no suene. Por eso:
 - La vista previa se dibuja **leyendo los mismos documentos DXF que se descargan** (`parseDxf`). Se
   calculan una sola vez (`getLayout` en `MusicBoxSheetGenerator`). Lo que se ve es el archivo.
   Comprobado: es idéntica píxel a píxel a la vista previa anterior, que se dibujaba desde la geometría.
-  Lo único que se añade encima son los resaltados verdes de los agujeros (bajo el ratón / seleccionados)
+  Lo único que se añade encima es el anillo del agujero bajo el ratón, las guías (líneas de nota y de compás, nota fantasma)
   y la línea de reproducción naranja con su brillo (ver "Línea de reproducción").
 - El piano reproduce **exactamente** las notas perforadas (`extractMusicBoxNotes`, sin los agujeros
   borrados a mano). No tiene lógica propia.
@@ -164,7 +164,7 @@ archivo .mid
     detiene el piano (archivo, pista, perfil, layout), vuelve al inicio. Borrar los primeros agujeros
     con el piano detenido la mueve con la música (en el inicio se queda en el inicio).
   - Arrastrar (decisión del usuario): un toque que se mueve más de 4 px (8 px con el dedo) es arrastre;
-    menos es un clic, que sigue seleccionando el agujero bajo la línea. Al empezar a arrastrar se pausa
+    menos es un clic, que quita el agujero bajo la línea. Al empezar a arrastrar se pausa
     el piano y solo sigue con el botón de play, desde la línea (`PianoPlayer.seek`: las notas que sonaban
     se apagan en 15 ms; `resume` programa desde ahí). Los agujeros que cruza suenan una vez
     (`PianoPlayer.scrub`, máximo 6 por movimiento, en el orden en que los cruza, también hacia atrás);
@@ -191,11 +191,13 @@ archivo .mid
     el orden de las entidades CIRCLE del DXF (verificado por posición en `expectPhysicallyValid` para
     todos los samples, perfiles y formatos). La vista previa busca el agujero **más cercano** al puntero
     (margen 1.2 mm con ratón, 2.5 mm con el dedo).
-  - Selección: un clic/toque **alterna** el agujero (varios a la vez; decisión del usuario, igual en
-    teléfono). Hover: anillo verde y cursor de mano (no en pantallas táctiles). Seleccionado: relleno y
-    anillo verdes. Borrar: botón, Backspace o Supr. Esc / "Unselect" quitan la selección. Deshacer:
-    botón o Ctrl+Z / ⌘Z, un paso cada vez; "Restore all" también es un paso que se puede deshacer. No hay
-    rehacer. Las teclas no actúan mientras se escribe en un campo (ahí editan el texto).
+  - **Un clic/toque sobre un agujero lo quita al instante** (decisión del usuario, "como en
+    musicbox.fun"; antes se seleccionaba y se borraba con un botón, Backspace o Supr, que ya no
+    existen): agujeros del archivo o añadidos. Hover: anillo color coral y cursor de mano (no en
+    pantallas táctiles), porque el clic borra. Cada clic es un paso de Deshacer: botón o Ctrl+Z / ⌘Z,
+    uno cada vez; "Restore all" también es un paso que se puede deshacer. No hay rehacer. Ctrl+Z no
+    actúa mientras se escribe en un campo (ahí deshace el texto). `DxfPreview` conserva su API
+    genérica de selección (`selectedHoleIds`), que la app ya no usa.
   - Lo borrado se quita **al final** de `extractMusicBoxNotes`: borrar un agujero nunca hace aparecer
     otro (una nota descartada por estar demasiado cerca sigue descartada). Borrar agujeros del medio o del
     final no mueve ningún otro; solo pueden moverse los cortes entre tiras (se ponen entre notas). Si se
@@ -222,6 +224,77 @@ archivo .mid
     los primeros agujeros), la app le pasa la diferencia y el piano mueve su inicio lo mismo, para seguir
     en el mismo punto de la música (sin saltarse ni repetir notas). Los demás cambios de ajustes siguen
     deteniéndolo.
+- **Añadir agujeros** (pedido por el usuario, "como en musicbox.fun"; `NoteGuides.ts`, `HoleEdits.ts`,
+  `DxfPreview.tsx`). Todo lo visual es **solo en pantalla**: el DXF sigue teniendo únicamente bordes y
+  agujeros (los añadidos incluidos), y sin ediciones es idéntico byte a byte (golden de 402 archivos:
+  3 samples × 2 perfiles × 17 formatos, con y sin auto-tamaño, y secuencias del piano).
+  - **Líneas de nota**: una línea gris por nota del perfil a lo largo de cada tira, en la posición
+    exacta de `getNoteLinePositions` colocada con `drawSheet` (la misma que los agujeros; test: pasan
+    por el centro de todos los círculos del DXF, 3 samples × 2 perfiles × 10 formatos, con espejo y
+    varias tiras y hojas). Las C van algo más marcadas. El nombre (`midiNoteName`: C4, F#5…) se
+    escribe antes del borde de entrada de cada tira, fuera del papel: encima en vertical, a la
+    izquierda en horizontal, repartido en filas/columnas (`labelLayout`: tantas como necesite el
+    ancho del nombre; 3 filas para 30 notas y 2 para 15 en vertical, 2 columnas en horizontal).
+    Letra 2.4 mm ≈ 9 px (la vista previa se dibuja a tamaño real: 1 mm = 3.78 px; las líneas están a
+    2 mm). El contenedor deja hueco (42 px arriba / 48 px a la izquierda) para las hojas sin margen.
+    En la primera tira empiezan sobre el corte inclinado del inicio (nunca fuera del papel).
+    Interruptor "Note lines" en la barra, activado por defecto. **No cambia ninguna distancia,
+    margen, tamaño de agujero ni corte.**
+  - **Nota fantasma**: con el ratón sobre papel vacío aparece un círculo verde discontinuo en la
+    línea más cercana (`snapToNoteLine`, inversa de la fórmula de los agujeros:
+    `t = inicio de la tira + x / (mm/s)`), con su nombre al lado y la línea y su etiqueta
+    resaltadas; cursor en cruz. A ≤ `CHORD_SNAP_MM` (1.2 mm) de un agujero de otra línea se alinea
+    en el tiempo con él (acorde). Nunca antes de t = 0 (el margen inicial) ni más allá del final de
+    la última tira (el agujero completo a `CUT_CLEARANCE_MM` del final); junto a un corte intermedio
+    no se limita: la paginación recoloca el corte, como al borrar. A ≤ `minNoteGap` de un agujero de
+    la misma línea se pinta en rojo (cursor "no") y el clic solo muestra el motivo bajo la barra
+    (5 s). En pantallas táctiles no hay fantasma: un toque añade directamente. Sobre la banda de la
+    línea de reproducción no hay fantasma ni se añade (un toque sin mover quita el agujero bajo la
+    línea, si lo hay; el clic que termina un arrastre no hace nada).
+  - **Clic** sobre papel vacío → `onAddHole(nota, segundos de la canción)`; sobre un agujero
+    (margen 1.2 / 2.5 mm) → quitarlo. La app guarda la nota en **tiempo del
+    archivo** (`segundos + removedLeadingSeconds`), con id `added:N` (N nunca se reutiliza, ni tras
+    deshacer), en `holeEdits.added`; mismo historial de Undo que los borrados. **Suena siempre** una
+    vez al instante (pedido por el usuario), parado, sonando o en pausa: `PianoPlayer.previewNote`
+    usa un AudioContext propio, así una canción en pausa sigue en pausa (su reloj detenido) y una
+    que suena no se toca. Además, sonando o en pausa, `updateSequence` la incorpora a la canción.
+  - **Extracción** (`extractMusicBoxNotes`, pasos 5 y 6): después de quitar los borrados, las
+    añadidas se perforan tal cual (sin transponer) si el perfil tiene la nota y no hay otro agujero
+    a ≤ `minNoteGap` en su línea (del archivo que quede, o añadido antes en el tiempo); si no, se
+    omiten y se avisa (`addedSkippedCount`: p. ej. al pasar a 15 notas una C#, o al restaurar un
+    agujero borrado junto a ella). **Nunca mueven ni quitan otro agujero**; en empate de tiempo va
+    primero la del archivo. Velocidad = mediana de las notas del archivo (100 si no hay), `trackIndex`
+    −1, no aparecen en el MIDI JSON. Una añadida se puede borrar como cualquier otra (entonces no
+    cuenta en ningún sitio). El desplazamiento por borrar los primeros agujeros se calcula como
+    antes (solo con los del archivo) y se **limita** para que ninguna añadida quede antes de t = 0:
+    una añadida en el silencio inicial pasa a ser el inicio de la canción. Así una añadida nunca
+    salta de sitio al borrar o restaurar: se mueve con la música, como los demás agujeros.
+  - Hoja: `fitSingleStrip` las cuenta; si la hoja estaba ajustada se reajusta (añadir después de la
+    última nota la alarga; dentro de la canción no cambia). Perfil, papel, pista y layout las
+    conservan; cargar un archivo o volver a detectar las notas de un MP3 las olvida (el panel del
+    MP3 lo avisa junto con las borradas). "Restore all" vuelve a los agujeros del archivo: devuelve
+    los borrados **y quita los añadidos**, en un paso que se puede deshacer. La barra muestra
+    "N holes deleted · M holes added".
+  - **Distancias** (pedido por el usuario, para mantener un espaciado constante): en una etiqueta
+    junto a la nota fantasma (fondo de papel, borde verde; `placeGhostLabel` prueba 8 posiciones y
+    elige la primera que no tapa ningún agujero), bajo su nombre, la distancia en mm al agujero anterior y al siguiente **de la misma línea**
+    (`gapBeforeMm` / `gapAfterMm` en `snapToNoteLine`; "–" si no hay; ↑/↓ en vertical, ←/→ en
+    horizontal). Un agujero en ese mismo instante no cuenta (es el caso bloqueado).
+  - **Rayas de compás** (pedido por el usuario, "el estándar" de las tiras y de musicbox.fun): líneas
+    a lo ancho de cada tira en los pulsos del **tempo del archivo** (`MidiFile.getBeatGrid`: cada
+    semicorchea desde el tick 0 siguiendo el mapa de tempos; `layout.beatSixteenthSeconds` en tiempo
+    de la canción, descontado el desplazamiento inicial). Se dibujan negras y corcheas, de la
+    primera a la última línea de nota; las semicorcheas no (se quitaron: el usuario las vio
+    innecesarias). Cada pulso cae en una sola tira (test).
+  - **Estilo de líneas copiado de musicbox.fun** (decisión del usuario, solo color y grosor): líneas
+    de nota y negras en negro al 70 % de opacidad (el usuario lo pidió "un poco más transparente"
+    para que destaquen la nota fantasma y sus distancias), corcheas en `#c0c0c0`, todas de 1 px en pantalla sea cual sea el zoom
+    (`vector-effect: non-scaling-stroke`). Sin C destacadas. Dentro de cada agujero se pinta papel
+    (`mb-holeMask`, debajo de las formas del DXF) para que las líneas no crucen los agujeros. Interruptor "Beat lines" aparte; con un MP3 arranca apagado (su MIDI va a 120 bpm fijos,
+    sus pulsos no significan nada). Archivos con timing SMPTE: sin rayas. Solo en pantalla.
+  - musicbox.fun (Bryan Braun) es GPLv3 **con Commons Clause** (prohíbe venderlo), incompatible con
+    nuestra GPLv3: **no se copió código**, solo la idea (líneas por nota, nombres, nota fantasma,
+    rojo cuando no cabe); la implementación es propia, en SVG sobre los documentos DXF.
 - **Audio** (`PianoPlayer.ts`): suena **una sola vez** y se detiene sola al final (el botón vuelve a
   "Play generated piano"; hay test). **Timbre de caja musical** (pedido por el usuario; antes eran 4
   ondas triangulares, tipo piano): cada nota son 4 senoidales (`PARTIALS`): fundamental que resuena, un

@@ -58,3 +58,16 @@
     font-size: 12px;
     font-variant-numeric: tabular-nums;
 }
+
+.mb-holeEditor-switch.bp3-control {
+    margin: 0 0 0 6px;
+    align-self: center;
+    color: var(--mb-ink, #263b37);
+    font-size: 12px;
+}
+
+.mb-holeEditor-notice {
+    margin: 8px 0 0;
+    color: var(--mb-coral, #c5664d);
+    font-size: 12px;
+}

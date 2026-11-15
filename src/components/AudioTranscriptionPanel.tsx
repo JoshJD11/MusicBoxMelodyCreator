@@ -36,6 +36,8 @@ export interface IAudioTranscriptionPanelProps {
     trimmedSeconds: number;
     /** Holes deleted by hand in the preview: detecting the notes again brings them back. */
     deletedHoleCount?: number;
+    /** Holes added by hand in the preview (dropped too). */
+    addedHoleCount?: number;
     /** Called when a slider is released (or reset): the notes are detected again. */
     onChange(settings: IAudioTranscriptionSettings): void;
 }
@@ -101,11 +103,11 @@ export function AudioTranscriptionPanel(props: IAudioTranscriptionPanelProps) {
                     the strip doesn&apos;t start with blank paper.
                 </p>
             )}
-            {!!props.deletedHoleCount && (
+            {(!!props.deletedHoleCount || !!props.addedHoleCount) && (
                 <p className="mb-audioTranscription-deleted" role="note">
-                    You deleted {props.deletedHoleCount} {props.deletedHoleCount === 1 ? 'hole' : 'holes'} by
-                    hand. Moving a slider detects the notes again and brings them back: set the sensitivity
-                    first, then delete the false notes.
+                    You {describeHoleEdits(props.deletedHoleCount || 0, props.addedHoleCount || 0)} by hand.
+                    Moving a slider detects the notes again and undoes those changes: set the sensitivity
+                    first, then edit the holes.
                 </p>
             )}
             {SLIDERS.map(({ key, label, hint, format }) => {
@@ -150,4 +152,11 @@ export function AudioTranscriptionPanel(props: IAudioTranscriptionPanelProps) {
             />
         </div>
     );
+}
+
+/** "deleted 1 hole", "added 2 holes" or "deleted 1 hole and added 2 holes". */
+function describeHoleEdits(deleted: number, added: number): string {
+    const holes = (count: number) => `${count} ${count === 1 ? 'hole' : 'holes'}`;
+    const parts = [deleted > 0 ? `deleted ${holes(deleted)}` : null, added > 0 ? `added ${holes(added)}` : null];
+    return parts.filter((part): part is string => part !== null).join(' and ');
 }

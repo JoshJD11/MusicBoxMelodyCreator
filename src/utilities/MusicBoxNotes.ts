@@ -31,6 +31,45 @@ export interface INoteExtractionOptions {
      * time (see {@link INoteExtractionResult.removedLeadingSeconds}); nothing else moves.
      */
     deletedNoteIds?: ReadonlySet<string>;
+
+    /**
+     * Holes added by hand ({@link IAddedNote}): notes the file doesn't have. They are punched as
+     * they are (no transposition) if the music box plays that note and nothing else is within
+     * `minNoteGapMm` on the same line; otherwise they are skipped and counted. They never move or
+     * remove another hole. `deletedNoteIds` applies to them too.
+     */
+    addedNotes?: ReadonlyArray<IAddedNote>;
+}
+
+/**
+ * A hole added by hand in the preview (see HoleEdits.ts). Its time is in the file's timeline, like
+ * the file's notes (before the blank paper of deleted leading holes is discounted), so that it stays
+ * with the music whatever else is deleted or restored.
+ */
+export interface IAddedNote {
+    /** `added:<n>` (see {@link addedNoteId}): never the id of a note of the file (`track:event`). */
+    id: string;
+    /** The note of the line it was placed on. */
+    note: MidiNote;
+    /** Time in the file's timeline (seconds, >= 0). */
+    timeSeconds: number;
+}
+
+/** Track index of the holes added by hand (they come from no track of the file). */
+export const ADDED_NOTE_TRACK = -1;
+
+/** Velocity of the holes added by hand when the file has no notes to take it from. */
+export const DEFAULT_ADDED_NOTE_VELOCITY = 100;
+
+const ADDED_NOTE_ID_PREFIX = 'added:';
+
+/** The {@link IMusicBoxNote.id} of the n-th hole added by hand. */
+export function addedNoteId(n: number): string {
+    return ADDED_NOTE_ID_PREFIX + n;
+}
+
+export function isAddedNoteId(id: string): boolean {
+    return id.startsWith(ADDED_NOTE_ID_PREFIX);
 }
 
 /** A note that will be punched in the music box strip. */
@@ -61,6 +100,7 @@ export interface IMusicBoxNote {
     durationSeconds: number;
 
     channel: number;
+    /** Track of the file the note comes from; {@link ADDED_NOTE_TRACK} for a hole added by hand. */
     trackIndex: number;
 }
 
@@ -83,8 +123,20 @@ export interface INoteExtractionResult {
     /** Percussion notes that were ignored. */
     percussionCount: number;
 
-    /** Holes deleted by hand (see {@link INoteExtractionOptions.deletedNoteIds}). */
+    /**
+     * Holes of the file deleted by hand (see {@link INoteExtractionOptions.deletedNoteIds}). A hole
+     * added and then deleted by hand is not counted anywhere.
+     */
     deletedCount: number;
+
+    /** Holes added by hand that are punched (see {@link INoteExtractionOptions.addedNotes}). */
+    addedCount: number;
+
+    /**
+     * Holes added by hand that are not punched: the music box doesn't play that note (the profile
+     * changed), or another hole is too close on the same line (e.g. a deleted one was restored).
+     */
+    addedSkippedCount: number;
 
     /**
      * Time removed from the start of the song because its first holes were deleted by hand: every
@@ -186,6 +238,8 @@ export function extractMusicBoxNotes(
         tooCloseCount: 0,
         percussionCount: 0,
         deletedCount: 0,
+        addedCount: 0,
+        addedSkippedCount: 0,
         removedLeadingSeconds: 0,
     };
 
@@ -286,27 +340,112 @@ export function extractMusicBoxNotes(
 
     // 4. Holes deleted by hand, last: nothing else changes because of them.
     const deleted = options.deletedNoteIds;
+    const isDeleted = (id: string) => !!deleted && deleted.has(id);
     const punched = kept.filter((note): note is IMusicBoxNote => note !== null);
-    result.notes = punched.filter(note => {
-        if (deleted && deleted.has(note.id)) {
+    const remaining = punched.filter(note => {
+        if (isDeleted(note.id)) {
             result.deletedCount++;
             return false;
         }
         return true;
     });
 
-    // 5. If the first holes were deleted, the song starts at the first hole left: every hole moves
-    //    back by the same time (decision of the user), so the strip has no blank paper where the
-    //    deleted holes were. Distances between holes don't change, and the silence of the file
-    //    before its first note is kept (it is part of the music).
-    if (result.notes.length > 0 && result.notes[0] !== punched[0]) {
-        const shift = result.notes[0].timeSeconds - punched[0].timeSeconds;
+    // 5. Holes added by hand: punched where they were placed if the box plays that note and no
+    //    other hole (of the file, left after the deletions, or added before) is too close on the
+    //    same line. They never move or remove another hole.
+    const added = acceptAddedNotes(options.addedNotes ?? [], remaining, punched, profile, supportedSet, isDeleted, result);
+    result.notes = added.length === 0 ? remaining : mergeByTime(remaining, added);
+
+    // 6. If the first holes of the file were deleted, the song starts at the first hole left: every
+    //    hole moves back by the same time (decision of the user), so the strip has no blank paper
+    //    where the deleted holes were. Distances between holes don't change, and the silence of the
+    //    file before its first note is kept (it is part of the music). A hole added before the
+    //    first hole left keeps its place: the song never starts after it.
+    if (remaining.length > 0 && remaining[0] !== punched[0]) {
+        let shift = remaining[0].timeSeconds - punched[0].timeSeconds;
+        added.forEach(note => {
+            shift = Math.min(shift, note.timeSeconds);
+        });
         if (shift > 0) {
             result.removedLeadingSeconds = shift;
             result.notes = result.notes.map(note => ({ ...note, timeSeconds: note.timeSeconds - shift }));
         }
     }
     return result;
+}
+
+/**
+ * The holes added by hand that can be punched (see {@link INoteExtractionOptions.addedNotes}), as
+ * notes of the strip, sorted by time. Counts the punched and the skipped ones in `result`.
+ */
+function acceptAddedNotes(
+    candidates: ReadonlyArray<IAddedNote>,
+    remaining: IMusicBoxNote[],
+    punched: IMusicBoxNote[],
+    profile: IMusicBoxProfile,
+    supportedSet: Set<MidiNote>,
+    isDeleted: (id: string) => boolean,
+    result: INoteExtractionResult
+): IMusicBoxNote[] {
+    if (candidates.length === 0) {
+        return [];
+    }
+    const minNoteGapSeconds = profile.minNoteGapMm / profile.millimetersPerSecond;
+    // As loud as a typical note of the file, so that the preview blends them in.
+    const velocity = medianVelocity(punched);
+    const accepted: IMusicBoxNote[] = [];
+    // Stable: holes added at the same time keep the order they were added in.
+    [...candidates].sort((a, b) => a.timeSeconds - b.timeSeconds).forEach(candidate => {
+        if (isDeleted(candidate.id)) {
+            return;
+        }
+        if (!supportedSet.has(candidate.note) || !(candidate.timeSeconds >= 0)) {
+            result.addedSkippedCount++;
+            return;
+        }
+        const tooClose = (note: IMusicBoxNote) =>
+            note.note === candidate.note && Math.abs(note.timeSeconds - candidate.timeSeconds) <= minNoteGapSeconds;
+        if (remaining.some(tooClose) || accepted.some(tooClose)) {
+            result.addedSkippedCount++;
+            return;
+        }
+        accepted.push({
+            id: candidate.id,
+            note: candidate.note,
+            originalNote: candidate.note,
+            timeSeconds: candidate.timeSeconds,
+            velocity,
+            durationSeconds: UNTERMINATED_NOTE_DURATION_SECONDS,
+            channel: 0,
+            trackIndex: ADDED_NOTE_TRACK,
+        });
+        result.addedCount++;
+    });
+    return accepted;
+}
+
+/** The median velocity of the notes ({@link DEFAULT_ADDED_NOTE_VELOCITY} if there are none). */
+function medianVelocity(notes: IMusicBoxNote[]): number {
+    if (notes.length === 0) {
+        return DEFAULT_ADDED_NOTE_VELOCITY;
+    }
+    const velocities = notes.map(note => note.velocity).sort((a, b) => a - b);
+    return velocities[Math.floor(velocities.length / 2)];
+}
+
+/** Merges two lists sorted by time; at the same time the notes of the first list come first. */
+function mergeByTime(first: IMusicBoxNote[], second: IMusicBoxNote[]): IMusicBoxNote[] {
+    const merged: IMusicBoxNote[] = [];
+    let i = 0;
+    let j = 0;
+    while (i < first.length || j < second.length) {
+        if (j >= second.length || (i < first.length && first[i].timeSeconds <= second[j].timeSeconds)) {
+            merged.push(first[i++]);
+        } else {
+            merged.push(second[j++]);
+        }
+    }
+    return merged;
 }
 
 /**

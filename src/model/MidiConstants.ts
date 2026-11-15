@@ -137,6 +137,14 @@ export enum MidiNote {
     G9 = 127
 }
 
+const PITCH_CLASS_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+/** The usual name of a MIDI note, e.g. 60 -> "C4", 61 -> "C#4" (middle C is C4, as in the enum). */
+export function midiNoteName(note: MidiNote): string {
+    const pitchClass = ((note % 12) + 12) % 12;
+    return PITCH_CLASS_NAMES[pitchClass] + (Math.floor(note / 12) - 1);
+}
+
 /** Message types for MIDI meta messages (status byte 0xFF) */
 export enum MIDIMetaMessageType {
     /** 2 bytes length, The number of a sequence, occurs at delta time 0 */

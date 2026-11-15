@@ -73,6 +73,16 @@ export default class PianoPlayer {
     private completionTimer: number | null = null;
     private scheduleTimer: number | null = null;
 
+    /**
+     * A separate audio output for single notes played right away whatever the song is doing (a hole
+     * added by hand): a paused song stays paused (its audio clock stays stopped) and a playing one is
+     * not touched.
+     */
+    private previewContext: AudioContext | null = null;
+    private previewOutput: IOutputChain | null = null;
+    private previewNoise: AudioBuffer | null = null;
+    private previewVoices: IPianoVoice[] = [];
+
     private state: PlaybackState = 'stopped';
     /** Set while an asynchronous transition (play/pause/resume) is running. */
     private busy = false;
@@ -231,6 +241,38 @@ export default class PianoPlayer {
     }
 
     /**
+     * Plays one note right away, once, in any playback state (stopped, playing or paused), on an
+     * audio output of its own: the song, its position and its audio clock are not touched. Used when
+     * a hole is added by hand.
+     */
+    public async previewNote(note: IScrubNote): Promise<void> {
+        const AudioCtor = getAudioContextConstructor();
+        if (!AudioCtor) {
+            return;
+        }
+        this.previewContext = this.previewContext ?? new AudioCtor();
+        const context = this.previewContext;
+        if (context.state === 'suspended') {
+            await context.resume();
+        }
+        if (this.previewContext !== context) {
+            return; // Disposed meanwhile.
+        }
+        this.previewOutput = this.previewOutput ?? createOutputChain(context);
+        this.previewNoise = this.previewNoise ?? createPianoNoiseBuffer(context);
+        const now = context.currentTime;
+        // Finished notes are disconnected (see releaseFinishedNotes).
+        this.previewVoices = this.previewVoices.filter(voice => {
+            if (voice.endTime > now) {
+                return true;
+            }
+            releaseVoice(voice);
+            return false;
+        });
+        this.previewVoices.push(createPianoNote(context, this.previewOutput.input, note.note, now, note.velocity, this.previewNoise));
+    }
+
+    /**
      * Replaces the notes of the song that is playing or paused, without moving the playback
      * position (e.g. after deleting holes): the notes that have already started keep sounding, and
      * the following ones are played from the new sequence. Does nothing when stopped.
@@ -295,6 +337,14 @@ export default class PianoPlayer {
         this.generation++;
         this.stopSources();
         this.seekPosition = null;
+        this.previewVoices.forEach(releaseVoice);
+        this.previewVoices = [];
+        if (this.previewContext) {
+            this.previewContext.close().catch(() => undefined);
+            this.previewContext = null;
+            this.previewOutput = null;
+            this.previewNoise = null;
+        }
         if (this.audioContext) {
             this.audioContext.close().catch(() => undefined);
             this.audioContext = null;

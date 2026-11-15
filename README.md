@@ -8,17 +8,29 @@ MIDI file. Automatic detection can miss notes or add false ones, so a MIDI file 
 if you only have audio, a melody played on piano or a similar single instrument gives the best result.
 Sliders let you adjust the detection sensitivity after loading an MP3.
 
-Holes can be deleted by hand in the preview (e.g. false notes of an MP3, or notes you don't want):
-click or tap a hole to select it (it is ringed in green under the mouse), then press Delete,
-Backspace or the Delete button. Undo (also Ctrl+Z / ⌘Z) and Restore all bring them back. The
-piano and the downloaded DXF never contain the deleted holes.
+Holes can be removed by hand in the preview (e.g. false notes of an MP3, or notes you don't want):
+click or tap a hole and it is gone (it is ringed under the mouse first), like on musicbox.fun. Undo
+(also Ctrl+Z / ⌘Z, one click at a time) and Restore all bring them back. The piano and the downloaded
+DXF never contain the removed holes.
+
+Holes can also be added (like on [musicbox.fun](https://musicbox.fun)): a thin line runs along every
+strip for each note of the music box, with the note's name before the strip, and a "ghost" hole follows
+the mouse on the nearest line. Click an empty spot to add a hole there (it is put in time with a very
+close hole of another line, to build chords); a spot too close to another hole on the same line is shown
+in red and can't be used, because the music box could not play it. Next to the ghost hole you see the
+distance to the previous and next hole on that line, to keep an even spacing, and the beats of the file
+(from its tempo: quarter notes black, eighth notes gray, as on musicbox.fun) are drawn across the strips
+like the printed lines of music box paper. A new hole always sounds once, also while the melody plays or
+is paused (without moving it). The lines and names are only drawn on screen: the
+downloaded DXF contains nothing but the cut lines and the holes. "Restore all" goes back to the holes of
+the file.
 
 While the melody plays, an orange line moves over the strips (across the strip being played, in
 both orientations and over every strip and sheet) and crosses each hole when its note sounds; the
 box of the strips scrolls with it (the rest of the page scrolls freely). Drag the line (mouse or
 finger) to go back or forward: the melody pauses, the holes it crosses sound, and the play button
-goes on from where you leave it. A tap on a hole under the line still selects it, so a note you
-don't like can be found and deleted.
+goes on from where you leave it. A tap on a hole under the line still removes it, so a note you
+don't like can be found and taken out.
 
 **Try it online:** https://musicboxmelodycreator.vercel.app
 
@@ -83,6 +95,10 @@ MP3 to MIDI uses [Basic Pitch](https://github.com/spotify/basic-pitch-ts) (code 
 and [TensorFlow.js](https://github.com/tensorflow/tfjs) by Google, both under the Apache License 2.0,
 which is compatible with the GPLv3.
 
+The note lines with their names, the ghost hole and the playback line follow the idea of
+[musicbox.fun](https://musicbox.fun) by Bryan Braun (GPLv3 with the Commons Clause). No code from it is
+used: everything here is written from scratch for this project's SVG preview.
+
 ### Modifications
 
 This project is a modified version of [musicbox-svg](https://github.com/SabinT/musicbox-svg),
@@ -144,3 +160,17 @@ Changes made by [JoshJD11] on [2026-11-10]:
   the audio output until the end of the song, so the audio processing grew heavier as the song went
   on (in Chrome, from 10% to 71% of its capacity after 2 minutes of a dense song). Notes are now
   disconnected when they finish (12-15%, steady). The sound itself and its volume are unchanged.
+
+Changes made by [JoshJD11] on [2026-11-14]:
+- Holes can be added in the preview: note lines with their names along every strip (on screen only),
+  a ghost hole that follows the mouse on the nearest line, snapping in time with a very close hole of
+  another line, and a red ghost where the music box could not play the hole. Added holes go through
+  the same checks as the file's notes, never move another hole, play on the piano, count for the
+  fitted sheet size and are in the DXF; nothing else in the DXF changes. Undo, Restore all and the
+  MP3 panel cover them too.
+- Beat lines across the strips from the file's tempo (quarter and eighth notes), with the colors of
+  musicbox.fun for them and for the note lines, and the distance from the ghost hole to the previous
+  and next hole on its line. Both on screen only. A hole added by hand always sounds once, also while
+  the melody plays or is paused.
+- A click on a hole removes it at once, like on musicbox.fun: no more selecting and pressing Delete
+  (the Delete button and keys are gone). Each click is one Undo step.

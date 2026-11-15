@@ -6,6 +6,8 @@ import { ICircle, ILine, IMusicBoxLayout } from "../utilities/MusicBoxLayout";
 import { IDxfDrawing, parseDxf } from "../utilities/DxfReader";
 import { IMusicBoxNote } from "../utilities/MusicBoxNotes";
 import { playheadAt, timeAtPoint } from "../utilities/Playhead";
+import { MidiNote } from "../model/MidiConstants";
+import { INoteSnap, LABEL_FONT_MM, placeGhostLabel, sheetNoteGuides, snapToNoteLine } from "../utilities/NoteGuides";
 
 /** The strips to cut: the layout and the DXF document of every sheet (what gets downloaded). */
 export interface IStripFiles {
@@ -26,6 +28,25 @@ export interface IDxfPreviewProps {
   selectedHoleIds?: ReadonlySet<string>;
   /** Makes the holes selectable: called with the note id of the hole clicked or tapped. */
   onHoleClick?(noteId: string): void;
+  /**
+   * Lets holes be added: a click (or tap) on an empty spot of a strip adds a hole of the nearest
+   * note line there, at the song time of the spot (`seconds`, as in the layout). Needs
+   * `files.layout`.
+   */
+  onAddHole?(note: MidiNote, seconds: number): void;
+  /** A click where no hole can be added (too close to another hole on the same line): why. */
+  onAddBlocked?(reason: string): void;
+  /**
+   * Draws a line per note of the music box along every strip, with the note's name before the
+   * strip (on screen only, never in the DXF). By default when holes can be added.
+   */
+  showNoteLines?: boolean;
+  /**
+   * Draws the beats of the file across every strip (quarter notes stronger, eighth notes lighter,
+   * sixteenth notes as short marks at the edges), like the printed lines of music box paper. On
+   * screen only. By default when holes can be added.
+   */
+  showBeatLines?: boolean;
   /** Shown above the sheets, and below the error when they can't be drawn. */
   toolbar?: React.ReactNode;
   /** The playback line (drawn over the sheets, never part of the DXF). */
@@ -146,6 +167,12 @@ export default class DxfPreview extends React.Component<IDxfPreviewProps> {
     const hasWarnings = layout.messages.some((m) => m.level === "warning");
     const drawings = this.getDrawings(dxfs);
     const holeIds = this.getHoleIds(layout);
+    const showNoteLines = this.props.showNoteLines ?? !!this.props.onAddHole;
+    const showBeatLines = this.props.showBeatLines ?? !!this.props.onAddHole;
+    // The note names are written before the leading edge of the strips: room for them outside a
+    // sheet whose margin is 0.
+    const wrapperClass = "mb-musicBoxSvgWrapper" +
+      (showNoteLines && layout.stripOrientation ? " mb-musicBoxSvgWrapper-guides-" + layout.stripOrientation : "");
 
     return (
       <>
@@ -171,7 +198,7 @@ export default class DxfPreview extends React.Component<IDxfPreviewProps> {
           onClickCapture={this.onClickCapture}
         >
           {drawings.map((drawing, index) => (
-            <div className="mb-musicBoxSvgWrapper" key={index}>
+            <div className={wrapperClass} key={index}>
               {drawing instanceof Error ? (
                 <Callout intent={Intent.DANGER}>
                   Sheet {index + 1}: {drawing.message}
@@ -182,6 +209,12 @@ export default class DxfPreview extends React.Component<IDxfPreviewProps> {
                   holeIds={holeIds[index]}
                   selectedHoleIds={this.props.selectedHoleIds}
                   onHoleClick={this.props.onHoleClick}
+                  layout={layout}
+                  sheetIndex={index}
+                  showNoteLines={showNoteLines}
+                  showBeatLines={showBeatLines}
+                  onAddHole={this.props.onAddHole}
+                  onAddBlocked={this.props.onAddBlocked}
                   overlay={this.props.playhead ? this.renderPlayhead(index) : undefined}
                 />
               )}
@@ -697,13 +730,26 @@ export interface IDxfDrawingSvgProps {
    * the mouse is over it, and a click or tap reports its note id.
    */
   onHoleClick?(noteId: string): void;
+  /** The layout the drawing comes from, and which of its sheets this is: for the note lines and to add holes. */
+  layout?: IMusicBoxLayout;
+  sheetIndex?: number;
+  /** Note lines with their names along the strips (see {@link IDxfPreviewProps.showNoteLines}). */
+  showNoteLines?: boolean;
+  /** Beat lines across the strips (see {@link IDxfPreviewProps.showBeatLines}). */
+  showBeatLines?: boolean;
+  /**
+   * Lets holes be added (needs `layout` and `sheetIndex`): a "ghost" hole follows the mouse on the
+   * nearest note line, and a click or tap on an empty spot adds a hole there.
+   */
+  onAddHole?(note: MidiNote, seconds: number): void;
+  onAddBlocked?(reason: string): void;
   /** Drawn over the sheet, in its millimeters (the playback line). */
   overlay?: React.ReactNode;
 }
 
 /** Draws one DXF sheet, in millimeters. */
 export function DxfDrawingSvg(props: IDxfDrawingSvgProps) {
-  const { drawing, holeIds, selectedHoleIds, onHoleClick, overlay } = props;
+  const { drawing, holeIds, selectedHoleIds, onHoleClick, layout, sheetIndex, showNoteLines, showBeatLines, onAddHole, onAddBlocked, overlay } = props;
   const w = drawing.widthMm;
   const h = drawing.heightMm;
   const svgRef = React.useRef<SVGSVGElement>(null);
@@ -711,49 +757,93 @@ export function DxfDrawingSvg(props: IDxfDrawingSvgProps) {
   const touchPress = React.useRef(false);
   // An id rather than an index: once that hole is deleted, nothing stays ringed.
   const [hoveredId, setHoveredId] = React.useState<string | null>(null);
+  // The hole that a click would add, under the mouse.
+  const [ghost, setGhost] = React.useState<INoteSnap | null>(null);
 
   const editable = !!onHoleClick && !!holeIds && holeIds.length === drawing.circles.length;
+  const guided = !!layout && sheetIndex !== undefined;
+  const showGuides = guided && (showNoteLines ?? !!onAddHole);
+  const showBeats = guided && (showBeatLines ?? !!onAddHole);
+  const canAdd = guided && !!onAddHole;
 
-  const holeAt = (clientX: number, clientY: number, marginMm = HOLE_HIT_MARGIN_MM): string | null => {
+  /** The point of the sheet (mm) under a point of the screen. */
+  const toSheetMm = (clientX: number, clientY: number): { x: number; y: number } | null => {
     const svg = svgRef.current;
-    if (!svg || !holeIds) {
+    if (!svg) {
       return null;
     }
     const rect = svg.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) {
       return null;
     }
-    const index = findHoleAt(
-      drawing.circles,
-      ((clientX - rect.left) * w) / rect.width,
-      ((clientY - rect.top) * h) / rect.height,
-      marginMm
-    );
+    return { x: ((clientX - rect.left) * w) / rect.width, y: ((clientY - rect.top) * h) / rect.height };
+  };
+
+  const holeAt = (clientX: number, clientY: number, marginMm = HOLE_HIT_MARGIN_MM): string | null => {
+    const point = toSheetMm(clientX, clientY);
+    if (!point || !holeIds) {
+      return null;
+    }
+    const index = findHoleAt(drawing.circles, point.x, point.y, marginMm);
     return index === null ? null : holeIds[index];
   };
 
-  const handlers: React.SVGProps<SVGSVGElement> = editable
+  const snapAt = (clientX: number, clientY: number): INoteSnap | null => {
+    const point = toSheetMm(clientX, clientY);
+    return point && layout && sheetIndex !== undefined ? snapToNoteLine(layout, sheetIndex, point.x, point.y) : null;
+  };
+
+  /** The playback line takes its own clicks (a press on it that doesn't move selects the hole under it, never adds one). */
+  const onPlayhead = (target: EventTarget | null) => target instanceof Element && !!target.closest(".mb-playhead");
+
+  const handlers: React.SVGProps<SVGSVGElement> = editable || canAdd
     ? {
       onPointerMove: (event) => {
-        // Touch screens have no hover: a tap selects directly.
-        if (event.pointerType !== "touch") {
-          setHoveredId(holeAt(event.clientX, event.clientY));
+        // Touch screens have no hover: a tap selects (or adds) directly.
+        if (event.pointerType === "touch") {
+          return;
         }
+        const id = editable ? holeAt(event.clientX, event.clientY) : null;
+        setHoveredId(id);
+        setGhost(id === null && canAdd && !onPlayhead(event.target) ? snapAt(event.clientX, event.clientY) : null);
       },
-      onPointerLeave: () => setHoveredId(null),
+      onPointerLeave: () => {
+        setHoveredId(null);
+        setGhost(null);
+      },
       onPointerDown: (event) => {
         touchPress.current = event.pointerType === "touch";
       },
       onClick: (event) => {
-        const id = holeAt(event.clientX, event.clientY, touchPress.current ? HOLE_TOUCH_MARGIN_MM : HOLE_HIT_MARGIN_MM);
-        if (id !== null && onHoleClick) {
-          onHoleClick(id);
+        const id = editable
+          ? holeAt(event.clientX, event.clientY, touchPress.current ? HOLE_TOUCH_MARGIN_MM : HOLE_HIT_MARGIN_MM)
+          : null;
+        if (id !== null) {
+          onHoleClick!(id);
+          return;
+        }
+        if (!canAdd || onPlayhead(event.target)) {
+          return;
+        }
+        const snap = snapAt(event.clientX, event.clientY);
+        if (!snap) {
+          return;
+        }
+        // The new hole takes the ghost's place (the mouse may not move for a while).
+        setGhost(null);
+        if (snap.blocked) {
+          if (onAddBlocked) {
+            onAddBlocked(snap.blocked);
+          }
+        } else {
+          onAddHole!(snap.note, snap.seconds);
         }
       },
     }
     : {};
 
   const hoveredIndex = editable && hoveredId !== null ? holeIds!.indexOf(hoveredId) : -1;
+  const cursor = hoveredIndex >= 0 ? "pointer" : ghost ? (ghost.blocked ? "not-allowed" : "crosshair") : undefined;
 
   return (
     <svg
@@ -762,10 +852,13 @@ export function DxfDrawingSvg(props: IDxfDrawingSvgProps) {
       height={h + "mm"}
       viewBox={`0 0 ${w} ${h}`}
       xmlns={"http://www.w3.org/2000/svg"}
-      className={editable ? "mb-sheetSvg mb-sheetSvg-editable" : "mb-sheetSvg"}
-      style={hoveredIndex >= 0 ? { cursor: "pointer" } : undefined}
+      className={editable || canAdd ? "mb-sheetSvg mb-sheetSvg-editable" : "mb-sheetSvg"}
+      style={cursor ? { cursor } : undefined}
       {...handlers}
     >
+      {(showGuides || showBeats) && (
+        <NoteGuidesLayer layout={layout!} sheetIndex={sheetIndex!} noteLines={showGuides} beatLines={showBeats} circles={drawing.circles} />
+      )}
       <DxfShapes drawing={drawing} />
       {editable && (
         <HoleHighlights
@@ -775,8 +868,132 @@ export function DxfDrawingSvg(props: IDxfDrawingSvgProps) {
           hoveredIndex={hoveredIndex}
         />
       )}
+      {ghost && guided && <GhostHole snap={ghost} layout={layout!} sheetIndex={sheetIndex!} circles={drawing.circles} />}
       {overlay}
     </svg>
+  );
+}
+
+/**
+ * The note lines of every strip of the sheet, with the note names before the strip's leading edge
+ * (two staggered rows or columns, since the lines are only ~2 mm apart). On screen only: not part of
+ * the DXF. Not redrawn while the pointer moves.
+ */
+const NoteGuidesLayer = React.memo(function NoteGuidesLayer(props: {
+  layout: IMusicBoxLayout;
+  sheetIndex: number;
+  noteLines: boolean;
+  beatLines: boolean;
+  /** The holes of the sheet: the lines are hidden inside them, so the holes read as before. */
+  circles: ICircle[];
+}) {
+  const { layout, sheetIndex, noteLines, beatLines, circles } = props;
+  const vertical = layout.stripOrientation === "vertical";
+  return (
+    <g className="mb-noteGuides" aria-hidden="true">
+      {sheetNoteGuides(layout, sheetIndex).map((strip) => (
+        <g key={strip.pageIndex}>
+          {beatLines && strip.beats.map((beat, i) => (
+            <line
+              key={i}
+              className={"mb-beatLine mb-beatLine-" + beat.kind}
+              x1={beat.line.x1}
+              y1={beat.line.y1}
+              x2={beat.line.x2}
+              y2={beat.line.y2}
+            />
+          ))}
+          {noteLines && strip.lines.map((guide) => (
+            <line
+              key={guide.note}
+              className={guide.landmark ? "mb-noteLine mb-noteLine-landmark" : "mb-noteLine"}
+              x1={guide.line.x1}
+              y1={guide.line.y1}
+              x2={guide.line.x2}
+              y2={guide.line.y2}
+            />
+          ))}
+          {noteLines && strip.lines.map((guide) => (
+            <text
+              key={guide.note}
+              className="mb-noteLabel"
+              x={guide.label.x}
+              y={guide.label.y}
+              fontSize={LABEL_FONT_MM}
+              textAnchor={vertical ? "middle" : "end"}
+              dominantBaseline={vertical ? "auto" : "central"}
+            >
+              {guide.name}
+            </text>
+          ))}
+        </g>
+      ))}
+      {circles.map((circle, i) => (
+        <circle key={i} className="mb-holeMask" cx={circle.cx} cy={circle.cy} r={circle.r} />
+      ))}
+    </g>
+  );
+});
+
+/** Text sizes and padding of the ghost hole's label (mm). */
+const GHOST_NAME_FONT_MM = 2.4;
+const GHOST_GAPS_FONT_MM = 2;
+const GHOST_LABEL_PAD_MM = 0.6;
+
+/**
+ * The hole that a click would add, where the mouse is: its line and name highlighted, the hole
+ * itself (red when it can't be punched there) and its name next to it.
+ */
+function GhostHole(props: { snap: INoteSnap; layout: IMusicBoxLayout; sheetIndex: number; circles: ICircle[] }) {
+  const { snap, layout, sheetIndex, circles } = props;
+  const vertical = layout.stripOrientation === "vertical";
+  const strip = sheetNoteGuides(layout, sheetIndex).find((s) => s.stripIndex === snap.stripIndex);
+  const guide = strip && strip.lines.find((line) => line.note === snap.note);
+  const sheet = layout.sheets[sheetIndex];
+  const placed = sheet.strips[snap.stripIndex];
+  // The middle of the strip across it, on the sheet (x for vertical strips, y for horizontal ones).
+  const middle = placed.offsetYMm + sheet.stripWidthMm / 2;
+  // Distances to the previous and next hole on this line (the song runs down / to the right).
+  const mm = (value: number | null) => (value === null ? "–" : value.toFixed(1) + " mm");
+  const gaps = vertical
+    ? `↑ ${mm(snap.gapBeforeMm)}  ↓ ${mm(snap.gapAfterMm)}`
+    : `← ${mm(snap.gapBeforeMm)}  ${mm(snap.gapAfterMm)} →`;
+  // A small label (name, then distances) where it covers no hole (see placeGhostLabel). Its size is
+  // estimated from the characters (no layout to measure text before drawing it).
+  const width = Math.max(snap.name.length * GHOST_NAME_FONT_MM * 0.66, gaps.length * GHOST_GAPS_FONT_MM * 0.56) + 2 * GHOST_LABEL_PAD_MM;
+  const height = GHOST_NAME_FONT_MM + GHOST_GAPS_FONT_MM + 0.5 + 2 * GHOST_LABEL_PAD_MM;
+  const box = placeGhostLabel(snap, { width, height }, circles, vertical ? "vertical" : "horizontal", middle);
+  const textX = box.x + GHOST_LABEL_PAD_MM;
+  return (
+    <g className="mb-noteGhostLayer" aria-hidden="true">
+      {guide && <line className="mb-noteLine-hover" x1={guide.line.x1} y1={guide.line.y1} x2={guide.line.x2} y2={guide.line.y2} />}
+      {guide && (
+        <text
+          className="mb-noteLabel mb-noteLabel-hover"
+          x={guide.label.x}
+          y={guide.label.y}
+          fontSize={LABEL_FONT_MM}
+          textAnchor={vertical ? "middle" : "end"}
+          dominantBaseline={vertical ? "auto" : "central"}
+        >
+          {guide.name}
+        </text>
+      )}
+      <circle className={snap.blocked ? "mb-noteGhost mb-noteGhost-blocked" : "mb-noteGhost"} cx={snap.cx} cy={snap.cy} r={snap.r} />
+      <rect className="mb-noteGhostLabel" x={box.x} y={box.y} width={box.width} height={box.height} rx={0.6} />
+      <text className="mb-noteGhostName" x={textX} y={box.y + GHOST_LABEL_PAD_MM} fontSize={GHOST_NAME_FONT_MM} dominantBaseline="hanging">
+        {snap.name}
+      </text>
+      <text
+        className="mb-noteGhostGaps"
+        x={textX}
+        y={box.y + GHOST_LABEL_PAD_MM + GHOST_NAME_FONT_MM + 0.5}
+        fontSize={GHOST_GAPS_FONT_MM}
+        dominantBaseline="hanging"
+      >
+        {gaps}
+      </text>
+    </g>
   );
 }
 

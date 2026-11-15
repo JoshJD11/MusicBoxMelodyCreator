@@ -424,4 +424,70 @@ describe('PianoPlayer', () => {
         player.stop();
         expect(scrubbed.every(o => o.disconnected)).toBe(true);
     });
+
+    describe('previewNote (a hole added by hand)', () => {
+        /** Every FakeAudioContext created, in order (the player's and the preview's). */
+        let contexts: FakeAudioContext[];
+        beforeEach(() => {
+            contexts = [];
+            vi.stubGlobal('AudioContext', class extends FakeAudioContext {
+                constructor() { super(); contexts.push(this); }
+            });
+            player = new PianoPlayer(state => states.push(state));
+        });
+        const pitch = (o: { frequency: FakeParam }) => Math.round(69 + 12 * Math.log2(o.frequency.value / 440));
+
+        it('sounds at once when stopped, without starting anything', async () => {
+            await player.previewNote({ note: 72, velocity: 100 });
+            expect(player.getState()).toBe('stopped');
+            expect(states).toEqual([]);
+            expect(contexts.length).toBe(1);
+            expect(contexts[0].oscillators.length).toBe(4);
+            expect(pitch(contexts[0].oscillators[0])).toBe(72);
+            expect(contexts[0].oscillators[0].startAt).toBe(0);
+        });
+
+        it('sounds at once while paused, on its own output: the paused song stays paused, its clock stopped', async () => {
+            await player.play(SONG);
+            advance(0.8);
+            await player.pause();
+            const song = contexts[0];
+            const before = song.oscillators.length;
+            await player.previewNote({ note: 72, velocity: 90 });
+            expect(song.state).toBe('suspended');
+            expect(song.oscillators.length).toBe(before);
+            expect(player.getState()).toBe('paused');
+            const preview = contexts[1];
+            expect(preview.oscillators.length).toBe(4);
+            expect(pitch(preview.oscillators[0])).toBe(72);
+            expect(preview.oscillators.every(o => !o.stopped)).toBe(true);
+            // The song goes on from where it was.
+            await player.resume();
+            expect(player.getState()).toBe('playing');
+        });
+
+        it('sounds at once while playing, without touching the song', async () => {
+            await player.play(SONG);
+            advance(0.4);
+            const song = contexts[0];
+            const scheduled = song.oscillators.map(o => [o.startAt, o.stopAt]);
+            await player.previewNote({ note: 76, velocity: 100 });
+            expect(song.oscillators.map(o => [o.startAt, o.stopAt])).toEqual(scheduled);
+            expect(contexts[1].oscillators.length).toBe(4);
+            expect(player.getState()).toBe('playing');
+        });
+
+        it('reuses its output, disconnects finished notes and is released with the player', async () => {
+            await player.previewNote({ note: 72, velocity: 100 });
+            const preview = contexts[0];
+            const first = preview.oscillators.slice();
+            preview.currentTime = 10;
+            await player.previewNote({ note: 74, velocity: 100 });
+            expect(contexts.length).toBe(1);
+            expect(first.every(o => o.disconnected)).toBe(true);
+            player.dispose();
+            expect(preview.state).toBe('closed');
+            expect(preview.oscillators.every(o => o.disconnected)).toBe(true);
+        });
+    });
 });

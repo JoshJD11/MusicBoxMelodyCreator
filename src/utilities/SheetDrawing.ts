@@ -1,5 +1,5 @@
 import type { StripOrientation } from '../model/IMusicBoxSvgFormatOptions';
-import type { ICircle, ILine, ISheet } from './MusicBoxLayout';
+import type { ICircle, ILine, IPlacedStrip, ISheet } from './MusicBoxLayout';
 
 /** The borders and holes of one strip, in sheet coordinates. */
 export interface IDrawnStrip {
@@ -54,4 +54,32 @@ export function drawSheet(sheet: ISheet, orientation: StripOrientation = 'horizo
             circles: geometry.circles.map(c => ({ cx: along + c.cx, cy: c.cy + row, r: c.r })),
         })),
     };
+}
+
+/**
+ * Places one line of a strip (strip coordinates) on its sheet, exactly like {@link drawSheet} places
+ * the strip's borders and holes: same orientation, centering and order of the strips.
+ */
+export function placeStripLine(sheet: ISheet, placed: IPlacedStrip, line: ILine, orientation: StripOrientation = 'horizontal'): ILine {
+    const single: ISheet = { ...sheet, strips: [{ ...placed, geometry: { ...placed.geometry, lines: [line], circles: [] } }] };
+    return drawSheet(single, orientation).strips[0].lines[0];
+}
+
+/**
+ * Inverse of the placement of {@link drawSheet}: a point of the sheet (mm) in the coordinates of
+ * the strip itself (x along the tape from its leading edge, y across it from its top edge).
+ */
+export function sheetPointToStrip(
+    sheet: ISheet,
+    placed: IPlacedStrip,
+    x: number,
+    y: number,
+    orientation: StripOrientation = 'horizontal'
+): { x: number; y: number } {
+    if (orientation === 'vertical') {
+        // (x, y) of the strip -> (column + width − y, along + x)
+        return { x: y - placed.offsetXMm, y: sheet.stripWidthMm - (x - placed.offsetYMm) };
+    }
+    // (x, y) of the strip -> (along + x, row + y)
+    return { x: x - placed.offsetXMm, y: y - placed.offsetYMm };
 }

@@ -4,7 +4,8 @@ import MidiFile from '../model/MidiFile';
 import { NoteMidiEvent } from '../model/MidiEvents';
 import { BuiltInProfiles } from '../model/IMusicBoxProfile';
 import {
-    extractMusicBoxNotes, findOctaveTransposition, getTrackSummaries, resolveTrackIndices,
+    ADDED_NOTE_TRACK, addedNoteId, DEFAULT_ADDED_NOTE_VELOCITY, extractMusicBoxNotes, findOctaveTransposition,
+    getTrackSummaries, IAddedNote, isAddedNoteId, resolveTrackIndices,
 } from './MusicBoxNotes';
 import { buildGeneratedMusicBoxSequence } from './MusicBoxMidi';
 import { buildMidi, endOfTrack, noteOff, noteOn, runningStatus, trackName } from '../testUtils/midiBuilder';
@@ -349,5 +350,151 @@ describe('holes deleted by hand', () => {
         const result = deleting(file, ['1:0', '1:2', '1:4']);
         expect(result.notes).toEqual([]);
         expect(result.removedLeadingSeconds).toBe(0);
+    });
+});
+
+describe('holes added by hand', () => {
+    // Track 1 (tempo track) is empty; track 2: C4, E4, G4 at 0, 0.5, 1 s (velocity 100).
+    const midiFile = () => load([[endOfTrack()], melody([60, 64, 67])], 1);
+    const added = (note: number, timeSeconds: number, n = 1): IAddedNote => ({ id: addedNoteId(n), note, timeSeconds });
+    const adding = (file: MidiFile, notes: IAddedNote[], deleted: string[] = [], profile = THIRTY) =>
+        extractMusicBoxNotes(file, profile, { transposeOutOfRangeNotes: true, addedNotes: notes, deletedNoteIds: new Set(deleted) });
+
+    it('has ids of its own', () => {
+        expect(addedNoteId(3)).toBe('added:3');
+        expect(isAddedNoteId('added:3')).toBe(true);
+        expect(isAddedNoteId('1:2')).toBe(false);
+    });
+
+    it('punches an added hole where it was placed, among the notes of the file, with their typical velocity', () => {
+        const file = midiFile();
+        const all = punched(file).notes;
+        const result = adding(file, [added(72, 0.75)]);
+        expect(result.notes.map(n => [n.id, n.note, n.timeSeconds])).toEqual([
+            ['1:0', 60, 0], ['1:2', 64, 0.5], ['added:1', 72, 0.75], ['1:4', 67, 1],
+        ]);
+        expect(result.notes[2]).toEqual({
+            id: 'added:1', note: 72, originalNote: 72, timeSeconds: 0.75, velocity: 100,
+            durationSeconds: 0.35, channel: 0, trackIndex: ADDED_NOTE_TRACK,
+        });
+        expect(result.addedCount).toBe(1);
+        expect(result.addedSkippedCount).toBe(0);
+        expect(result.deletedCount).toBe(0);
+        // Nothing else changes: the file's holes are the same objects' values.
+        expect(result.notes.filter(n => !isAddedNoteId(n.id))).toEqual(all);
+        // Without added holes nothing changes at all.
+        expect(adding(file, [])).toEqual(punched(file));
+    });
+
+    it('at the same time as a note of the file, the file\'s note comes first; added holes keep their order', () => {
+        const file = midiFile();
+        const result = adding(file, [added(72, 0.5, 2), added(74, 0.5, 1)]);
+        expect(result.notes.map(n => n.id)).toEqual(['1:0', '1:2', 'added:2', 'added:1', '1:4']);
+    });
+
+    it('takes the velocity from the file (median), or a default when the file has no notes', () => {
+        const soft = load([[noteOn(0, 60, 40), noteOff(480, 60), noteOn(0, 64, 60), noteOff(480, 64), noteOn(0, 67, 120), noteOff(480, 67), endOfTrack()]]);
+        expect(adding(soft, [added(72, 0.25)]).notes.find(n => n.id === 'added:1')!.velocity).toBe(60);
+        // Only percussion in the file: no note to take it from.
+        const drums = load([melody([60], 0.5, 9)]);
+        const result = adding(drums, [added(72, 0.25)]);
+        expect(result.notes.map(n => [n.id, n.velocity])).toEqual([['added:1', DEFAULT_ADDED_NOTE_VELOCITY]]);
+    });
+
+    it('skips (and counts) an added hole of a note the box can\'t play, or before the start of the file', () => {
+        const file = midiFile();
+        // C#5 on the 15 note box; a time before 0.
+        const result = adding(file, [added(73, 0.75, 1), added(72, -0.1, 2), added(72, 0.75, 3)], [], FIFTEEN);
+        expect(result.notes.map(n => n.id)).toEqual(['1:0', '1:2', 'added:3', '1:4']);
+        expect(result.addedCount).toBe(1);
+        expect(result.addedSkippedCount).toBe(2);
+        expect(result.unsupportedCount).toBe(0);
+    });
+
+    it('skips an added hole too close to a hole on the same line (before or after it), never the file\'s hole', () => {
+        const file = midiFile();
+        // minNoteGap = 3 mm at 20 mm/s = 0.15 s. E4 is at 0.5 s.
+        const result = adding(file, [added(64, 0.6, 1), added(64, 0.4, 2), added(64, 0.66, 3), added(64, 0.34, 4), added(60, 0.6, 5)]);
+        expect(result.notes.map(n => [n.id, n.note, n.timeSeconds])).toEqual([
+            ['1:0', 60, 0], ['added:4', 64, 0.34], ['1:2', 64, 0.5], ['added:5', 60, 0.6], ['added:3', 64, 0.66], ['1:4', 67, 1],
+        ]);
+        expect(result.addedSkippedCount).toBe(2);
+        expect(result.addedCount).toBe(3);
+        expect(result.tooCloseCount).toBe(0);
+    });
+
+    it('skips an added hole too close to a hole added before it (in time order)', () => {
+        const file = midiFile();
+        const result = adding(file, [added(72, 0.3, 1), added(72, 0.2, 2), added(72, 0.36, 3)]);
+        // 0.2 comes first in time and is kept; 0.3 is within 0.15 s of it; 0.36 is 0.16 s after 0.2.
+        expect(result.notes.filter(n => isAddedNoteId(n.id)).map(n => [n.id, n.timeSeconds])).toEqual([['added:2', 0.2], ['added:3', 0.36]]);
+        expect(result.addedSkippedCount).toBe(1);
+    });
+
+    it('a deleted hole of the file frees its place; restoring it skips the added hole instead', () => {
+        const file = midiFile();
+        const withDeleted = adding(file, [added(64, 0.55)], ['1:2']);
+        expect(withDeleted.notes.map(n => [n.id, n.timeSeconds])).toEqual([['1:0', 0], ['added:1', 0.55], ['1:4', 1]]);
+        expect(withDeleted.deletedCount).toBe(1);
+        expect(withDeleted.addedCount).toBe(1);
+        const restored = adding(file, [added(64, 0.55)], []);
+        expect(restored.notes.map(n => n.id)).toEqual(['1:0', '1:2', '1:4']);
+        expect(restored.addedSkippedCount).toBe(1);
+    });
+
+    it('an added hole can be deleted: it is simply gone, counted nowhere', () => {
+        const file = midiFile();
+        const result = adding(file, [added(72, 0.75)], ['added:1']);
+        expect(result.notes.map(n => n.id)).toEqual(['1:0', '1:2', '1:4']);
+        expect(result.addedCount).toBe(0);
+        expect(result.addedSkippedCount).toBe(0);
+        expect(result.deletedCount).toBe(0);
+    });
+
+    it('the piano plays the added holes', () => {
+        const piano = buildGeneratedMusicBoxSequence(midiFile(), THIRTY, { transposeOutOfRangeNotes: true, addedNotes: [added(72, 0.75)] });
+        expect(piano.map(e => [e.note, e.startTimeSeconds, e.velocity])).toEqual([[60, 0, 100], [64, 0.5, 100], [72, 0.75, 100], [67, 1, 100]]);
+    });
+
+    describe('with the first holes of the file deleted (the song moves back)', () => {
+        // 1 s of silence, then C4, E4, G4 at 1, 1.5, 2 s.
+        const silent = () => load([[noteOn(TICKS_PER_SECOND, 60, 100), noteOff(240, 60), noteOn(240, 64, 100), noteOff(240, 64),
+            noteOn(240, 67, 100), noteOff(240, 67), endOfTrack()]]);
+
+        it('an added hole is stored in the file\'s time and moves back with the music', () => {
+            const file = silent();
+            // Placed between E4 and G4 of the file (1.75 s in the file).
+            const result = adding(file, [added(72, 1.75)], ['0:0']);
+            expect(result.removedLeadingSeconds).toBeCloseTo(0.5, 9);
+            expect(result.notes.map(n => [n.id, Number(n.timeSeconds.toFixed(9))])).toEqual([['0:2', 1], ['added:1', 1.25], ['0:4', 1.5]]);
+        });
+
+        it('the song never starts after an added hole: the shift stops at it, so it stays on the paper', () => {
+            const file = silent();
+            // Added at 1.2 s of the file, between the deleted C4 and E4: the shift is the usual 0.5 s
+            // (the added hole is still at 0.7 s of the song, after its start).
+            const between = adding(file, [added(72, 1.2)], ['0:0']);
+            expect(between.removedLeadingSeconds).toBeCloseTo(0.5, 9);
+            expect(between.notes.map(n => [n.id, Number(n.timeSeconds.toFixed(9))])).toEqual([['added:1', 0.7], ['0:2', 1], ['0:4', 1.5]]);
+
+            // Added at 0.2 s of the file, in its leading silence: a shift of 0.5 s would put it before
+            // the start of the strip, so the song starts at the added hole instead.
+            const early = adding(file, [added(72, 0.2)], ['0:0']);
+            expect(early.removedLeadingSeconds).toBeCloseTo(0.2, 9);
+            expect(early.notes.map(n => [n.id, Number(n.timeSeconds.toFixed(9))])).toEqual([['added:1', 0], ['0:2', 1.3], ['0:4', 1.8]]);
+
+            // An added hole at the very start of the file: nothing moves.
+            const atStart = adding(file, [added(72, 0)], ['0:0']);
+            expect(atStart.removedLeadingSeconds).toBe(0);
+            expect(atStart.notes.map(n => [n.id, n.timeSeconds])).toEqual([['added:1', 0], ['0:2', 1.5], ['0:4', 2]]);
+        });
+
+        it('with every hole of the file deleted, the added holes are the song (no shift)', () => {
+            const file = silent();
+            const result = adding(file, [added(72, 1.75)], ['0:0', '0:2', '0:4']);
+            expect(result.notes.map(n => [n.id, n.timeSeconds])).toEqual([['added:1', 1.75]]);
+            expect(result.removedLeadingSeconds).toBe(0);
+            expect(result.deletedCount).toBe(3);
+        });
     });
 });

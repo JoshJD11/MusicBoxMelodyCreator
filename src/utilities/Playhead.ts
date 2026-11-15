@@ -1,5 +1,5 @@
 import { ILine, IMusicBoxLayout, IPlacedStrip, ISheet } from './MusicBoxLayout';
-import { drawSheet } from './SheetDrawing';
+import { placeStripLine, sheetPointToStrip } from './SheetDrawing';
 
 /**
  * The playback line drawn on the preview: where the song is, on the strips exactly as they are cut.
@@ -123,16 +123,10 @@ export function timeAtPoint(layout: IMusicBoxLayout, sheetIndex: number, x: numb
 
 /** A line of a strip (strip coordinates) placed on its sheet, exactly like its holes and borders. */
 function placeLine(sheet: ISheet, placed: IPlacedStrip, line: ILine, layout: IMusicBoxLayout): ILine {
-    const single: ISheet = { ...sheet, strips: [{ ...placed, geometry: { ...placed.geometry, lines: [line], circles: [] } }] };
-    return drawSheet(single, layout.stripOrientation).strips[0].lines[0];
+    return placeStripLine(sheet, placed, line, layout.stripOrientation);
 }
 
 /** Inverse of the placement of `drawSheet`: a point of the sheet in the strip's own coordinates. */
 function toStripCoordinates(sheet: ISheet, placed: IPlacedStrip, x: number, y: number, layout: IMusicBoxLayout): { x: number; y: number } {
-    if (layout.stripOrientation === 'vertical') {
-        // (x, y) of the strip -> (column + width − y, along + x)
-        return { x: y - placed.offsetXMm, y: sheet.stripWidthMm - (x - placed.offsetYMm) };
-    }
-    // (x, y) of the strip -> (along + x, row + y)
-    return { x: x - placed.offsetXMm, y: y - placed.offsetYMm };
+    return sheetPointToStrip(sheet, placed, x, y, layout.stripOrientation);
 }

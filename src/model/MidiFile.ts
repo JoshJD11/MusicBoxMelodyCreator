@@ -443,6 +443,12 @@ function isTempoEvent(event: IMidiEvent): event is MetaMidiEvent {
 /**
  * Basic MIDI file parser based on http://www.somascape.org/midi/tech/mfile.html
  */
+/** Where the beats of a file fall in time (see {@link MidiFile.getBeatGrid}). */
+export interface IBeatGrid {
+    /** Time in seconds of every sixteenth note, from tick 0: index 0 is the start, every 4th one a quarter note. */
+    sixteenthSeconds: number[];
+}
+
 export default class MidiFile {
     public chunks: IMidiChunk[] = [];
 
@@ -450,6 +456,9 @@ export default class MidiFile {
     public tracks: MidiTrack[] = []
 
     public midiStats: IMidiStats;
+
+    /** The tempo map the note times were resolved with (null for timecode files). */
+    private tempoMap: ITempoSegment[] | null = null;
 
     constructor() {
         this.midiStats = this.getInitialMidiStats();
@@ -463,6 +472,7 @@ export default class MidiFile {
         this.chunks = [];
         this.tracks = [];
         this.header = undefined;
+        this.tempoMap = null;
         this.midiStats = this.getInitialMidiStats();
 
         const dataView = new DataView(buffer);
@@ -549,8 +559,11 @@ export default class MidiFile {
 
         if (header.fileFormat === MidiFileFormat.Type2) {
             // Type 2: every track is an independent sequence with its own tempo.
-            this.tracks.forEach(track => {
+            this.tracks.forEach((track, index) => {
                 const tempoMap = buildTempoMap(track.events.filter(isTempoEvent), ppqn);
+                if (index === 0) {
+                    this.tempoMap = tempoMap;
+                }
                 track.events.forEach(event => {
                     event.absTimeSeconds = ticksToSeconds(event.absTicks, tempoMap);
                 });
@@ -562,10 +575,33 @@ export default class MidiFile {
         const tempoEvents: MetaMidiEvent[] = [];
         this.tracks.forEach(track => tempoEvents.push(...track.events.filter(isTempoEvent)));
         const tempoMap = buildTempoMap(tempoEvents, ppqn);
+        this.tempoMap = tempoMap;
 
         this.tracks.forEach(track => track.events.forEach(event => {
             event.absTimeSeconds = ticksToSeconds(event.absTicks, tempoMap);
         }));
+    }
+
+    /**
+     * The beats of the file up to `untilSeconds`: the time of every sixteenth note from tick 0,
+     * following the tempo map (the same one the notes were resolved with), like the bar lines of a
+     * score. Null for timecode files, which have no beats. (Type 2 files: the first track's tempo.)
+     */
+    public getBeatGrid(untilSeconds: number): IBeatGrid | null {
+        const ppqn = this.header && this.header.pulsesPerQuarterNote;
+        if (!this.tempoMap || !ppqn || !(untilSeconds >= 0)) {
+            return null;
+        }
+        const ticksPerSixteenth = ppqn / 4;
+        const sixteenthSeconds: number[] = [];
+        for (let i = 0; ; i++) {
+            const seconds = ticksToSeconds(i * ticksPerSixteenth, this.tempoMap);
+            if (seconds > untilSeconds) {
+                break;
+            }
+            sixteenthSeconds.push(seconds);
+        }
+        return { sixteenthSeconds };
     }
 
     private collectStats(): IMidiStats {

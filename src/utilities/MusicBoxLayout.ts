@@ -2,7 +2,7 @@ import MidiFile from '../model/MidiFile';
 import { IMusicBoxProfile } from '../model/IMusicBoxProfile';
 import { IMusicBoxSvgFormatOptions, sheetDimensionNames, StripOrientation } from '../model/IMusicBoxSvgFormatOptions';
 import { MidiNote } from '../model/MidiConstants';
-import { extractMusicBoxNotes, IMusicBoxNote, INoteExtractionResult, TrackSelection } from './MusicBoxNotes';
+import { extractMusicBoxNotes, IAddedNote, IMusicBoxNote, INoteExtractionResult, TrackSelection } from './MusicBoxNotes';
 import { drawSheet, ISheetDrawing } from './SheetDrawing';
 
 /** Length of the jigsaw joiner tab, in mm. */
@@ -84,6 +84,10 @@ export interface ILayoutMessage {
 }
 
 export interface IMusicBoxLayout {
+    /** The music box the strips are for (note lines, hole size, speed). */
+    profile: IMusicBoxProfile;
+    /** The options the strips were laid out with. */
+    format: IMusicBoxSvgFormatOptions;
     extraction: INoteExtractionResult;
     pages: IStripPage[];
     sheets: ISheet[];
@@ -100,6 +104,12 @@ export interface IMusicBoxLayout {
     millimetersPerSecond: number;
     /** Orientation of the drawings (see {@link drawSheet}). */
     stripOrientation: StripOrientation;
+    /**
+     * Song time (seconds, like the notes) of every sixteenth note of the file from its start to the
+     * end of the last strip (every 4th one is a quarter note): the beat lines of the preview. Empty
+     * when the file has no beats (timecode timing). Only drawn on screen, never in the DXF.
+     */
+    beatSixteenthSeconds: number[];
 }
 
 /**
@@ -368,20 +378,23 @@ export function buildSheets(
 
 /**
  * Computes everything needed to preview, play and export the strips for a MIDI file, without the
- * holes deleted by hand (`deletedNoteIds`, see {@link INoteExtractionOptions.deletedNoteIds}).
+ * holes deleted by hand (`deletedNoteIds`, see {@link INoteExtractionOptions.deletedNoteIds}) and
+ * with the holes added by hand (`addedNotes`, see {@link INoteExtractionOptions.addedNotes}).
  */
 export function computeMusicBoxLayout(
     midiFile: MidiFile,
     profile: IMusicBoxProfile,
     format: IMusicBoxSvgFormatOptions,
     trackSelection: TrackSelection = 'auto',
-    deletedNoteIds?: ReadonlySet<string>
+    deletedNoteIds?: ReadonlySet<string>,
+    addedNotes?: ReadonlyArray<IAddedNote>
 ): IMusicBoxLayout {
     const extraction = extractMusicBoxNotes(midiFile, profile, {
         transposeOutOfRangeNotes: format.transposeOutOfRangeNotes,
         includePercussion: format.includePercussion,
         trackSelection,
         deletedNoteIds,
+        addedNotes,
     });
 
     if (extraction.notes.length === 0 && extraction.deletedCount > 0) {
@@ -419,9 +432,29 @@ export function computeMusicBoxLayout(
     if (extraction.percussionCount > 0) {
         messages.push({ level: 'info', text: `${extraction.percussionCount} percussion notes ignored.` });
     }
+    if (extraction.addedCount > 0) {
+        messages.push({ level: 'info', text: `${extraction.addedCount} ${extraction.addedCount === 1 ? 'hole' : 'holes'} added by hand.` });
+    }
+    if (extraction.addedSkippedCount > 0) {
+        messages.push({
+            level: 'warning',
+            text: `${extraction.addedSkippedCount} added ${extraction.addedSkippedCount === 1 ? 'hole' : 'holes'} skipped: ` +
+                'the music box can\'t play that note, or another hole is too close on the same line.',
+        });
+    }
+
+    // Beats of the file in song time (the file's time, less the blank paper removed at the start).
+    const shift = extraction.removedLeadingSeconds;
+    const beats = midiFile.getBeatGrid(pages[pages.length - 1].endTimeInSeconds + shift);
+    const beatSixteenthSeconds = beats
+        ? beats.sixteenthSeconds.map(seconds => seconds - shift).filter(seconds => seconds >= pages[0].startTimeInSeconds)
+        : [];
 
     return {
+        profile,
+        format,
         extraction,
+        beatSixteenthSeconds,
         pages,
         sheets,
         drawings,
@@ -439,18 +472,20 @@ export function computeMusicBoxLayout(
  * - strip length: the song's length, rounded up to the next whole millimeter (plus the room that
  *   pagination reserves for a jigsaw tab, if enabled);
  * - sheet size across the strips: the paper width.
- * Every other option is kept. Holes deleted by hand (`deletedNoteIds`) are not counted.
+ * Every other option is kept. Holes deleted by hand (`deletedNoteIds`) are not counted; holes added
+ * by hand (`addedNotes`) are.
  */
 export function fitSingleStrip(
     midiFile: MidiFile,
     profile: IMusicBoxProfile,
     format: IMusicBoxSvgFormatOptions,
     trackSelection: TrackSelection = 'auto',
-    deletedNoteIds?: ReadonlySet<string>
+    deletedNoteIds?: ReadonlySet<string>,
+    addedNotes?: ReadonlyArray<IAddedNote>
 ): IMusicBoxSvgFormatOptions {
     // Without a size limit, the whole song is one strip.
     const unlimited = computeMusicBoxLayout(
-        midiFile, profile, { ...format, pageWidthMm: 0, pageHeightMm: 0 }, trackSelection, deletedNoteIds);
+        midiFile, profile, { ...format, pageWidthMm: 0, pageHeightMm: 0 }, trackSelection, deletedNoteIds, addedNotes);
     const lengthMm = unlimited.totalPaperLengthMm + (format.jigsawJoiners ? JIGSAW_WIDTH_MM : 0);
     return {
         ...format,

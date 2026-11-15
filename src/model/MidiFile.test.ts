@@ -1,4 +1,4 @@
-import MidiFile, { MidiHeader, MidiFileFormat, MidiTimingScheme, MidiTrack } from './MidiFile';
+import MidiFile, { isNoteStart, MidiHeader, MidiFileFormat, MidiTimingScheme, MidiTrack } from './MidiFile';
 import { IMidiEvent, MetaMidiEvent, NoteMidiEvent, PitchBendMidiEvent, SysExMidiEvent, ChannelMessageType } from './MidiEvents';
 import { MIDIMetaMessageType, MidiNote } from './MidiConstants';
 import {
@@ -268,3 +268,38 @@ function GetMetaEventsByType(timingTrack: MidiTrack, metaMessageType: MIDIMetaMe
     return timingTrack.events
         .filter(x => x instanceof MetaMidiEvent && x.metaMessageType === metaMessageType);
 }
+
+describe('getBeatGrid', () => {
+    function load(tracks: number[][][], options: { format?: number; ppqn?: number; division?: number } = {}): MidiFile {
+        const midiFile = new MidiFile();
+        midiFile.loadFromBuffer(buildMidi({ ppqn: 480, tracks, ...options }));
+        return midiFile;
+    }
+
+    it('lists every sixteenth note from tick 0 up to the given time, following the tempo map', () => {
+        // 120 bpm for one quarter note (480 ticks), then 60 bpm.
+        const midiFile = load([[tempo(0, 500000), tempo(480, 1000000), noteOn(0, 60), noteOff(480, 60), endOfTrack()]]);
+        const grid = midiFile.getBeatGrid(2)!;
+        // Sixteenths: 0.125 s each at 120 bpm (4 of them), then 0.25 s each at 60 bpm.
+        expect(grid.sixteenthSeconds.map(s => Number(s.toFixed(6)))).toEqual([0, 0.125, 0.25, 0.375, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]);
+        // The notes fall exactly on the grid.
+        const note = midiFile.getTracks()[0].events.find(isNoteStart)!;
+        expect(grid.sixteenthSeconds).toContain(note.absTimeSeconds);
+        expect(midiFile.getBeatGrid(0)!.sixteenthSeconds).toEqual([0]);
+        expect(midiFile.getBeatGrid(-1)).toBeNull();
+    });
+
+    it('uses the default 120 bpm when the file has no tempo, and the tempo track of type 1 files', () => {
+        const plain = load([[noteOn(0, 60), noteOff(480, 60), endOfTrack()]]);
+        expect(plain.getBeatGrid(0.5)!.sixteenthSeconds).toEqual([0, 0.125, 0.25, 0.375, 0.5]);
+        const typeOne = load([[tempo(0, 1000000), endOfTrack()], [noteOn(0, 60), noteOff(480, 60), endOfTrack()]], { format: 1 });
+        expect(typeOne.getBeatGrid(0.5)!.sixteenthSeconds).toEqual([0, 0.25, 0.5]);
+    });
+
+    it('has no beats for timecode files', () => {
+        // 25 fps, 40 sub-frames: 1 ms per tick.
+        const midiFile = load([[noteOn(0, 60), noteOff(1000, 60), endOfTrack()]], { division: ((256 - 25) << 8) | 40 });
+        expect(midiFile.getBeatGrid(2)).toBeNull();
+        expect(new MidiFile().getBeatGrid(1)).toBeNull();
+    });
+});

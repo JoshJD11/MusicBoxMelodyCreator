@@ -7,7 +7,7 @@ import {
     buildSheets, buildStripGeometry, computeMusicBoxLayout, CUT_CLEARANCE_MM, getNoteLinePositions, IMusicBoxLayout,
     fitSingleStrip, JIGSAW_WIDTH_MM, paginateNotes, STRIP_SPACING_MM,
 } from './MusicBoxLayout';
-import { extractMusicBoxNotes, IMusicBoxNote } from './MusicBoxNotes';
+import { addedNoteId, extractMusicBoxNotes, IAddedNote, IMusicBoxNote } from './MusicBoxNotes';
 import { createDxf } from './DxfExporter';
 import { parseDxf } from './DxfReader';
 
@@ -54,6 +54,13 @@ function loadSample(name: string): MidiFile {
     const midiFile = new MidiFile();
     midiFile.loadFromBuffer(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength));
     return midiFile;
+}
+
+/** The layout without the options it was made with (they are kept as they were given). */
+function withoutFormat(layout: IMusicBoxLayout): Omit<IMusicBoxLayout, 'format'> {
+    const rest: Partial<IMusicBoxLayout> = { ...layout };
+    delete rest.format;
+    return rest as Omit<IMusicBoxLayout, 'format'>;
 }
 
 function notesAt(times: number[], note = 60): IMusicBoxNote[] {
@@ -371,8 +378,8 @@ describe('vertical mirror', () => {
     it('changes nothing when disabled', () => {
         const midiFile = loadSample(SAMPLES[2]);
         const profile = BuiltInProfiles['fifteenNote'];
-        expect(computeMusicBoxLayout(midiFile, profile, { ...FORMAT, mirrorVertically: false }))
-            .toEqual(computeMusicBoxLayout(midiFile, profile, FORMAT));
+        expect(withoutFormat(computeMusicBoxLayout(midiFile, profile, { ...FORMAT, mirrorVertically: false })))
+            .toEqual(withoutFormat(computeMusicBoxLayout(midiFile, profile, FORMAT)));
     });
 });
 
@@ -380,8 +387,8 @@ describe('strip orientation', () => {
     it('is horizontal by default', () => {
         const midiFile = loadSample(SAMPLES[2]);
         const profile = BuiltInProfiles['thirtyNote'];
-        expect(computeMusicBoxLayout(midiFile, profile, { ...FORMAT, stripOrientation: 'horizontal' }))
-            .toEqual(computeMusicBoxLayout(midiFile, profile, FORMAT));
+        expect(withoutFormat(computeMusicBoxLayout(midiFile, profile, { ...FORMAT, stripOrientation: 'horizontal' })))
+            .toEqual(withoutFormat(computeMusicBoxLayout(midiFile, profile, FORMAT)));
     });
 
     it('only changes the drawings: pages, strips and sheets in strip coordinates stay the same', () => {
@@ -546,5 +553,130 @@ describe('holes deleted by hand', () => {
         const ids = new Set(extractMusicBoxNotes(midiFile, profile, { transposeOutOfRangeNotes: true }).notes.map(n => n.id));
         expect(() => computeMusicBoxLayout(midiFile, profile, FORMAT, 'auto', ids))
             .toThrow('Every hole was deleted. Use Undo or Restore all to bring them back.');
+    });
+});
+
+describe('holes added by hand', () => {
+    const profile = BuiltInProfiles['thirtyNote'];
+    const circlesOf = (layout: IMusicBoxLayout) => layout.drawings.map(d => parseDxf(createDxf(d)).circles);
+    const positions = getNoteLinePositions(profile);
+
+    /** A free line (no hole within 1 s) at `timeSeconds`, for the holes of `notes`. */
+    function freeNote(notes: IMusicBoxNote[], timeSeconds: number): number {
+        return [...profile.supportedNotes].sort((a, b) => b - a).find(note =>
+            !notes.some(n => n.note === note && Math.abs(n.timeSeconds - timeSeconds) < 1))!;
+    }
+
+    SAMPLES.forEach(sample => {
+        ['default', 'unlimited', 'vertical277x190', 'verticalMirrored', 'jigsaw'].forEach(key => {
+            it(`${sample} / ${key}: punches the added holes where they were placed and moves no other hole; the result is physically valid`, () => {
+                const midiFile = loadSample(sample);
+                const format = FORMAT_VARIANTS[key];
+                const before = computeMusicBoxLayout(midiFile, profile, format);
+                const notes = before.extraction.notes;
+                const middle = notes[Math.floor(notes.length / 2)].timeSeconds + 0.07;
+                const last = notes[notes.length - 1].timeSeconds;
+                const added: IAddedNote[] = [
+                    // A chord with the first note, a hole in a gap, and one after the end of the song.
+                    { id: addedNoteId(1), note: freeNote(notes, notes[0].timeSeconds), timeSeconds: notes[0].timeSeconds },
+                    { id: addedNoteId(2), note: freeNote(notes, middle), timeSeconds: middle },
+                    { id: addedNoteId(3), note: freeNote(notes, last + 0.4), timeSeconds: last + 0.4 },
+                ];
+                const after = computeMusicBoxLayout(midiFile, profile, format, 'auto', undefined, added);
+                expect(after.extraction.addedCount).toBe(3);
+                expect(after.extraction.addedSkippedCount).toBe(0);
+                expect(after.extraction.removedLeadingSeconds).toBe(0);
+                expectPhysicallyValid(after, profile, format);
+                expect(after.messages).toContainEqual({ level: 'info', text: '3 holes added by hand.' });
+
+                // Every hole of the file is still there, at the same time and on the same line; the added
+                // ones are on their line at their time. On the whole tape nothing else moved (the cuts
+                // between strips may).
+                const positionOnTape = (layout: IMusicBoxLayout) => {
+                    const map = new Map<string, [number, number]>();
+                    layout.extraction.notes.forEach(n => map.set(n.id, [(n.timeSeconds - layout.pages[0].startTimeInSeconds) * profile.millimetersPerSecond, positions.get(n.note)!]));
+                    return map;
+                };
+                const tapeBefore = positionOnTape(before);
+                const tapeAfter = positionOnTape(after);
+                tapeBefore.forEach((position, id) => expect(tapeAfter.get(id)).toEqual(position));
+                added.forEach(a => expect(tapeAfter.get(a.id)).toEqual([(a.timeSeconds - before.pages[0].startTimeInSeconds) * profile.millimetersPerSecond, positions.get(a.note)!]));
+                // The DXF has exactly one more circle per added hole.
+                expect(circlesOf(after).flat().length).toBe(circlesOf(before).flat().length + 3);
+                // The song is 0.4 s longer: so is the tape (0.5 s of blank paper after the last note, when there is room).
+                expect(after.totalPaperLengthMm).toBeGreaterThan(before.totalPaperLengthMm);
+            });
+        });
+    });
+
+    it('without added holes the layout is exactly the same', () => {
+        const midiFile = loadSample('ode_to_joy.mid');
+        expect(computeMusicBoxLayout(midiFile, profile, FORMAT, 'auto', undefined, []))
+            .toEqual(computeMusicBoxLayout(midiFile, profile, FORMAT));
+    });
+
+    it('an added hole that can\'t be punched is reported', () => {
+        const midiFile = loadSample('happy_birthday.mid');
+        const first = extractMusicBoxNotes(midiFile, profile, { transposeOutOfRangeNotes: true }).notes[0];
+        const layout = computeMusicBoxLayout(midiFile, profile, FORMAT, 'auto', undefined,
+            [{ id: addedNoteId(1), note: first.note, timeSeconds: first.timeSeconds + 0.05 }]);
+        expect(layout.extraction.addedSkippedCount).toBe(1);
+        expect(layout.messages).toContainEqual({
+            level: 'warning',
+            text: '1 added hole skipped: the music box can\'t play that note, or another hole is too close on the same line.',
+        });
+        expect(circlesOf(layout).flat().length).toBe(layout.extraction.notes.length);
+    });
+
+    it('fits the sheet to the song with its added holes', () => {
+        const midiFile = loadSample('happy_birthday.mid');
+        const notes = extractMusicBoxNotes(midiFile, profile, { transposeOutOfRangeNotes: true }).notes;
+        const last = notes[notes.length - 1].timeSeconds;
+        const added = [{ id: addedNoteId(1), note: freeNote(notes, last + 1), timeSeconds: last + 1 }];
+        const fitted = fitSingleStrip(midiFile, profile, FORMAT);
+        const longer = fitSingleStrip(midiFile, profile, FORMAT, 'auto', undefined, added);
+        expect(longer.pageWidthMm - fitted.pageWidthMm).toBeGreaterThanOrEqual(Math.floor(profile.millimetersPerSecond));
+        expect(longer.pageWidthMm - fitted.pageWidthMm).toBeLessThanOrEqual(Math.ceil(profile.millimetersPerSecond) + 1);
+        expectPhysicallyValid(computeMusicBoxLayout(midiFile, profile, longer, 'auto', undefined, added), profile, longer);
+    });
+
+    it('the added holes alone are a song when every hole of the file is deleted', () => {
+        const midiFile = loadSample('happy_birthday.mid');
+        const notes = extractMusicBoxNotes(midiFile, profile, { transposeOutOfRangeNotes: true }).notes;
+        const deleted = new Set(notes.map(n => n.id));
+        const added = [{ id: addedNoteId(1), note: notes[0].note, timeSeconds: 2 }, { id: addedNoteId(2), note: notes[0].note, timeSeconds: 3 }];
+        const layout = computeMusicBoxLayout(midiFile, profile, FORMAT, 'auto', deleted, added);
+        expect(layout.extraction.notes.map(n => [n.id, n.timeSeconds])).toEqual([['added:1', 2], ['added:2', 3]]);
+        expectPhysicallyValid(layout, profile, FORMAT);
+    });
+});
+
+describe('beat lines', () => {
+    const profile = BuiltInProfiles['thirtyNote'];
+
+    it('are the beats of the file up to the end of the last strip, in song time', () => {
+        const midiFile = loadSample('ode_to_joy.mid');
+        const layout = computeMusicBoxLayout(midiFile, profile, FORMAT);
+        const end = layout.pages[layout.pages.length - 1].endTimeInSeconds;
+        const grid = midiFile.getBeatGrid(end)!.sixteenthSeconds;
+        expect(layout.beatSixteenthSeconds).toEqual(grid);
+        expect(layout.beatSixteenthSeconds[0]).toBe(0);
+        expect(layout.beatSixteenthSeconds[layout.beatSixteenthSeconds.length - 1]).toBeLessThanOrEqual(end);
+        // The notes of the file fall on its beats (quantized sample).
+        layout.extraction.notes.slice(0, 20).forEach(note =>
+            expect(Math.min(...grid.map(t => Math.abs(t - note.timeSeconds)))).toBeLessThan(1e-6));
+    });
+
+    it('move back with the song when the first holes are deleted (never before the strip)', () => {
+        const midiFile = loadSample('happy_birthday.mid');
+        const notes = extractMusicBoxNotes(midiFile, profile, { transposeOutOfRangeNotes: true }).notes;
+        const times = [...new Set(notes.map(n => n.timeSeconds))];
+        const deleted = new Set(notes.filter(n => n.timeSeconds <= times[1]).map(n => n.id));
+        const layout = computeMusicBoxLayout(midiFile, profile, FORMAT, 'auto', deleted);
+        const shift = layout.extraction.removedLeadingSeconds;
+        expect(shift).toBeGreaterThan(0);
+        const full = computeMusicBoxLayout(midiFile, profile, FORMAT).beatSixteenthSeconds;
+        const expected = full.map(t => t - shift).filter(t => t >= layout.pages[0].startTimeInSeconds);
+        expect(layout.beatSixteenthSeconds.slice(0, expected.length)).toEqual(expected);
     });
 });
